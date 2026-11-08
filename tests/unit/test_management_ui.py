@@ -18,7 +18,7 @@ from src.domain.enums import Environment
 from src.services.first_run_service import DEMO_KEYWORDS, DEMO_SCENARIO_NAME, DEMO_SITE_NAME
 from src.ui.dialogs.browser_profile_dialog import BrowserProfileDialog
 from src.ui.dialogs.keyword_dialogs import BulkKeywordDialog, KeywordDialog, parse_tags
-from src.ui.dialogs.scenario_dialog import NOT_LISTED_LABEL, ScenarioDialog
+from src.ui.dialogs.scenario_dialog import ScenarioDialog
 from src.ui.dialogs.target_site_dialog import TargetSiteDialog
 from src.ui.main_window import MainWindow
 from src.ui.navigation import PageKey
@@ -171,13 +171,12 @@ def test_scenario_dialog_shows_field_errors_then_saves(
     dialog.keyword_input.setCurrentText("unknown thing")
     dialog.max_dwell_input.setValue(40)
     dialog.iterations_input.setValue(2)
-    dialog.position_input.setCurrentIndex(dialog.position_input.findText(NOT_LISTED_LABEL))
     dialog.save()
 
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert dialog.error_for("name") == ""
     saved = cast(Scenario, dialog.saved)
-    assert (saved.name, saved.simulated_position, saved.iterations) == ("Negative test", None, 2)
+    assert (saved.name, saved.iterations) == ("Negative test", 2)
 
 
 def test_scenario_dialog_prefills_when_editing(qtbot: QtBot, container: AppContainer) -> None:
@@ -190,7 +189,8 @@ def test_scenario_dialog_prefills_when_editing(qtbot: QtBot, container: AppConta
     assert values["name"] == DEMO_SCENARIO_NAME
     assert values["keyword"] == scenario.keyword
     assert values["target_site_id"] == scenario.target_site_id
-    assert (values["simulated_position"], values["min_dwell_seconds"]) == (4, 8)
+    assert values["min_dwell_seconds"] == 8  # the demo scenario's own dwell
+    assert not hasattr(dialog, "position_input")  # no invented rank can be configured any more
     dialog.scroll_input.setChecked(False)
     assert not dialog.max_scroll_input.isEnabled()
 

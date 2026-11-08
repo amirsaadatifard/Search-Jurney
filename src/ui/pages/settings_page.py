@@ -46,7 +46,6 @@ THEME_CHOICES: Final = (
     ("Follow the system", ThemeMode.SYSTEM),
 )
 SCREENSHOT_LABELS: Final = (
-    ("search_results", "Search results page"),
     ("target_opened", "Target page after opening it"),
     ("session_end", "End of every session"),
     ("error", "When something fails"),
@@ -56,7 +55,6 @@ ENV_KEYS: Final = {
     "database_file": "SJAT_DATABASE_FILE",
     "screenshots_dir": "SJAT_SCREENSHOTS_DIR",
     "logs_dir": "SJAT_LOGS_DIR",
-    "search_port": "SJAT_SEARCH_PORT",
     "target_port": "SJAT_TARGET_PORT",
 }
 
@@ -135,7 +133,10 @@ class SettingsPage(BasePage):
     def _defaults_card(self) -> Card:
         card = Card("Automation defaults")
         card.body.addWidget(
-            _muted("Used for new scenarios (dwell times) and for every run (timeout, screenshots).")
+            _muted(
+                "Used for new scenarios (dwell times) and for every run (timeout, screenshots, and "
+                "the Google query settings both rank sources send)."
+            )
         )
 
         def spin(maximum: int, suffix: str = " s") -> QSpinBox:
@@ -147,6 +148,11 @@ class SettingsPage(BasePage):
         self.min_dwell = spin(100000)
         self.max_dwell = spin(100000)
         self.timeout = spin(100000)
+        self.search_results = spin(1000, "")
+        self.search_language = QLineEdit()
+        self.search_language.setPlaceholderText("e.g. de or en-US (blank = Google decides)")
+        self.search_country = QLineEdit()
+        self.search_country.setPlaceholderText("e.g. DE (blank = no country boost)")
         self.concurrent = spin(1, "")
         self.concurrent.setValue(1)
         self.concurrent.setEnabled(False)
@@ -161,6 +167,9 @@ class SettingsPage(BasePage):
             ("max_dwell_seconds", "Default maximum dwell time", self.max_dwell),
             ("timeout_seconds", "Default timeout per step", self.timeout),
             ("", "Maximum concurrent sessions", self.concurrent),
+            ("requested_results", "Results read per Google query", self.search_results),
+            ("search_language", "Google interface language", self.search_language),
+            ("search_country", "Google country", self.search_country),
         )
         for index, (key, caption, widget) in enumerate(rows):
             grid.addWidget(QLabel(caption), index, 0)
@@ -194,6 +203,9 @@ class SettingsPage(BasePage):
         self.min_dwell.setValue(defaults.min_dwell_seconds)
         self.max_dwell.setValue(defaults.max_dwell_seconds)
         self.timeout.setValue(defaults.timeout_seconds)
+        self.search_results.setValue(defaults.requested_results)
+        self.search_language.setText(defaults.search_language)
+        self.search_country.setText(defaults.search_country)
         for key, box in self.shot_boxes.items():
             box.setChecked(defaults.screenshots.get(key, True))
         for label in self.default_errors.values():
@@ -207,6 +219,9 @@ class SettingsPage(BasePage):
             max_dwell_seconds=self.max_dwell.value(),
             timeout_seconds=self.timeout.value(),
             screenshots={key: box.isChecked() for key, box in self.shot_boxes.items()},
+            search_language=self.search_language.text(),
+            search_country=self.search_country.text(),
+            requested_results=self.search_results.value(),
         )
         try:
             self._container.settings.save_automation_defaults(defaults)
@@ -262,17 +277,11 @@ class SettingsPage(BasePage):
             grid.addWidget(opener, index, 3)
         card.body.addLayout(grid)
 
-        self.search_port = QSpinBox()
-        self.search_port.setRange(0, 99999)
-        self.search_port.setValue(config.search_port)
         self.target_port = QSpinBox()
         self.target_port.setRange(0, 99999)
         self.target_port.setValue(config.target_port)
         ports = QHBoxLayout()
-        ports.addWidget(QLabel("Search simulator port"))
-        ports.addWidget(self.search_port)
-        ports.addSpacing(20)
-        ports.addWidget(QLabel("Test site port"))
+        ports.addWidget(QLabel("Sample site port"))
         ports.addWidget(self.target_port)
         ports.addStretch(1)
         card.body.addLayout(ports)
@@ -321,8 +330,6 @@ class SettingsPage(BasePage):
             text = field.text().strip()
             if text and text != current[key]:
                 changes[ENV_KEYS[key]] = text
-        if self.search_port.value() != config.search_port:
-            changes[ENV_KEYS["search_port"]] = str(self.search_port.value())
         if self.target_port.value() != config.target_port:
             changes[ENV_KEYS["target_port"]] = str(self.target_port.value())
         return changes
@@ -335,7 +342,6 @@ class SettingsPage(BasePage):
         try:
             candidate = {
                 "data_dir": self.location_inputs["data_dir"].text().strip(),
-                "search_port": self.search_port.value(),
                 "target_port": self.target_port.value(),
             }
             AppConfig.model_validate(candidate)

@@ -31,7 +31,8 @@ _LABEL_BY_STATUS: dict[HealthStatus, str] = {
 }
 _SAFETY_POINTS: tuple[str, ...] = (
     "Automation runs only against localhost and explicitly approved test sites.",
-    "Public search engines are blocked and cannot be added to the allowlist.",
+    "Search engines cannot be added to the allowlist; a scenario that reads Google's own page is "
+    "an explicit, per-scenario choice and asks for one page.",
     "Redirects that leave the approved domain abort the session.",
     "No CAPTCHA solving, fingerprint spoofing, IP rotation or anti-bot evasion is implemented.",
 )
@@ -164,7 +165,7 @@ class AboutPage(BasePage):
         self._summary.setText(report.summary())
 
     def show_servers(self) -> None:
-        """Render the current state of the search simulator and the sample site."""
+        """Render the current state of the bundled sample website."""
         _clear_grid(self._servers_grid)
         servers = self.context.container.servers
         for row, status in enumerate(servers.statuses()):

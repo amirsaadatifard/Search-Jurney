@@ -3,17 +3,25 @@
 The session runner (state machine, timeline, dwell loop) is written against this
 interface only. The Playwright implementation lives in ``playwright_engine``;
 tests substitute a fake, so every runner rule is verified without a browser.
+
+Two ways of finding a ranking reach this interface:
+
+* the browser channel asks the engine to read Google's results page
+  (:meth:`AutomationEngine.read_search_page`) - one navigation per iteration,
+  and the only page it may open that is not an approved target site;
+* the API channel reads the ranking through a search provider
+  (:mod:`src.search_providers`) before any browser exists, and the engine only
+  opens the target.
 """
 
 from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from typing import Any
 
 from src.automation.interaction_service import ScheduledAction
-from src.automation.models import InteractionOutcome, ResultItem, SessionPlan
+from src.automation.models import InteractionOutcome, SearchPageRead, SessionPlan
 from src.domain.enums import ScreenshotKind
 
 
@@ -29,37 +37,29 @@ class AutomationEngine(ABC):
     def current_url(self) -> str:
         """URL of the page the session is on ('' before the first navigation)."""
 
+    @property
+    def is_open(self) -> bool:
+        """Whether a page is currently open (``False`` before the browser starts)."""
+        return False
+
     @abstractmethod
     async def start_session(self, plan: SessionPlan) -> dict[str, Any]:
         """Launch the browser if needed, open an isolated context and return browser info."""
 
     @abstractmethod
-    async def navigate(self, url: str) -> str:
-        """Open ``url`` and return the final URL after redirects."""
+    async def read_search_page(self, url: str, limit: int) -> SearchPageRead:
+        """Read a Google results page and return what it shows.
+
+        The one capability that opens a page which is *not* an approved target
+        site, for the browser search channel. Implementations must validate
+        ``url`` through ``DomainSafetyService.check_search_url`` - which accepts
+        nothing but a Google results page - and must not click a result link,
+        scroll, re-query, or try to get past a captcha.
+        """
 
     @abstractmethod
     async def open_url(self, url: str) -> str:
-        """Open ``url`` directly (no search page involved); return the final URL."""
-
-    @abstractmethod
-    async def fill_search(self, keyword: str) -> None:
-        """Type ``keyword`` into the search box."""
-
-    @abstractmethod
-    async def submit_search(self) -> None:
-        """Submit the search and wait for the results page."""
-
-    @abstractmethod
-    async def get_results(self) -> list[ResultItem]:
-        """Parse the results currently on screen."""
-
-    @abstractmethod
-    def find_target(self, results: Sequence[ResultItem], target_url: str) -> ResultItem | None:
-        """Return the result that points to the target site, or ``None``."""
-
-    @abstractmethod
-    async def open_target(self, item: ResultItem) -> str:
-        """Open the result as a user would; return the URL that loaded."""
+        """Open ``url`` and return the final URL after redirects."""
 
     @abstractmethod
     async def perform_safe_interaction(

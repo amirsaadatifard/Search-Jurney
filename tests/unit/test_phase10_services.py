@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from src.app.bootstrap import bootstrap, shutdown
 from src.app.config import AppConfig
@@ -32,7 +31,7 @@ def other(tmp_path: Path) -> Iterator[AppContainer]:
     """A second, empty application (the import target)."""
     paths = AppPaths.from_data_dir(tmp_path / "other", root=PROJECT_ROOT)
     paths.ensure_directories()
-    config = AppConfig(data_dir=paths.data_dir, search_port=18865, target_port=18866)
+    config = AppConfig(data_dir=paths.data_dir, target_port=18866)
     instance = bootstrap(config, paths, InMemoryCredentialStore())
     yield instance
     shutdown(instance)
@@ -69,26 +68,23 @@ def test_overrides_are_read_from_the_environment() -> None:
     assert config.logs_dir == Path("C:/somewhere/logs") and config.database_file == Path("x.db")
 
 
-def test_both_ports_must_differ() -> None:
-    with pytest.raises(ValidationError, match="different ports"):
-        AppConfig(search_port=9000, target_port=9000)
-
-
 # -- .env editing ---------------------------------------------------------------------- #
 def test_env_file_preserves_everything_it_does_not_touch(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     env.write_text(
-        "# my notes\nSJAT_SEARCH_PORT=9000\nOTHER=keep me\nSJAT_LOG_LEVEL=DEBUG\n", encoding="utf-8"
+        "# my notes\nSJAT_TARGET_PORT=9000\nOTHER=keep me\nSJAT_LOG_LEVEL=DEBUG\n",
+        encoding="utf-8",
     )
     assert update_env_file(
-        env, {"SJAT_SEARCH_PORT": "9100", "SJAT_TARGET_PORT": "9200", "SJAT_LOG_LEVEL": None}
+        env,
+        {"SJAT_TARGET_PORT": "9200", "SJAT_DATA_DIR": "D:/data", "SJAT_LOG_LEVEL": None},
     )
     assert (
         env.read_text(encoding="utf-8")
-        == "# my notes\nSJAT_SEARCH_PORT=9100\nOTHER=keep me\nSJAT_TARGET_PORT=9200\n"
+        == "# my notes\nSJAT_TARGET_PORT=9200\nOTHER=keep me\nSJAT_DATA_DIR=D:/data\n"
     )
-    assert not update_env_file(env, {"SJAT_SEARCH_PORT": "9100"})  # nothing to change
-    assert AppConfig.from_environment({}, env_file=env).search_port == 9100
+    assert not update_env_file(env, {"SJAT_TARGET_PORT": "9200"})  # nothing to change
+    assert AppConfig.from_environment({}, env_file=env).target_port == 9200
 
 
 def test_env_file_is_created_and_rejects_unsafe_input(tmp_path: Path) -> None:
@@ -114,8 +110,7 @@ def test_defaults_round_trip_and_feed_the_scenario_form(container: AppContainer)
             max_dwell_seconds=9,
             timeout_seconds=45,
             screenshots={
-                "search_results": False,
-                "target_opened": True,
+                "target_opened": False,
                 "session_end": True,
                 "error": False,
             },
@@ -123,11 +118,11 @@ def test_defaults_round_trip_and_feed_the_scenario_form(container: AppContainer)
     )
     saved = container.settings.automation_defaults()
     assert (saved.min_dwell_seconds, saved.max_dwell_seconds, saved.timeout_seconds) == (3, 9, 45)
-    assert saved.screenshots["search_results"] is False and saved.screenshots["error"] is False
+    assert saved.screenshots["target_opened"] is False and saved.screenshots["error"] is False
     options = container.scenarios.form_options()
     assert (options.default_min_dwell, options.default_max_dwell) == (3, 9)
     plan = container.runs.build_plans([container.scenarios.search()[0].id])[0]
-    assert plan.timeout_seconds == 45 and not plan.screenshots.search_results
+    assert plan.timeout_seconds == 45 and not plan.screenshots.target_opened
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import random
-from collections.abc import Sequence
 from typing import Any
 
 from playwright.async_api import Error as PlaywrightError
@@ -13,9 +12,9 @@ from src.automation.browser_manager import BrowserManager, BrowserSession, trans
 from src.automation.control import RunControl
 from src.automation.engine import AutomationEngine
 from src.automation.interaction_service import InteractionService, ScheduledAction
-from src.automation.models import InteractionOutcome, ResultItem, SessionPlan
+from src.automation.models import InteractionOutcome, SearchPageRead, SessionPlan
 from src.automation.screenshot_service import ScreenshotService
-from src.automation.search_actions import SearchActions
+from src.automation.search_actions import SearchPageActions
 from src.automation.target_actions import TargetActions
 from src.domain.enums import ScreenshotKind
 from src.domain.exceptions import AutomationError, BrowserLaunchError
@@ -34,8 +33,8 @@ class PlaywrightEngine(AutomationEngine):
         screenshots: ScreenshotService,
     ) -> None:
         self._manager = BrowserManager(safety)
-        self._search = SearchActions(safety)
         self._targets = TargetActions(safety)
+        self._searches = SearchPageActions(safety)
         self._interactions = InteractionService(safety, control)
         self._screenshots = screenshots
         self._plan: SessionPlan | None = None
@@ -70,26 +69,17 @@ class PlaywrightEngine(AutomationEngine):
         except PlaywrightError as exc:
             raise BrowserLaunchError(f"The browser session could not be opened: {exc}") from exc
 
-    async def navigate(self, url: str) -> str:
-        return await self._search.open(self._active(), url)
+    @property
+    def is_open(self) -> bool:
+        return self._session is not None
 
     async def open_url(self, url: str) -> str:
-        return await self._search.goto(self._active(), url)
+        return await self._targets.open_url(self._active(), url)
 
-    async def fill_search(self, keyword: str) -> None:
-        await self._search.fill(self._active(), keyword)
-
-    async def submit_search(self) -> None:
-        await self._search.submit(self._active())
-
-    async def get_results(self) -> list[ResultItem]:
-        return await self._search.read_results(self._active())
-
-    def find_target(self, results: Sequence[ResultItem], target_url: str) -> ResultItem | None:
-        return self._targets.find_target(results, target_url)
-
-    async def open_target(self, item: ResultItem) -> str:
-        return await self._targets.open(self._active(), item)
+    async def read_search_page(self, url: str, limit: int) -> SearchPageRead:
+        # The one navigation that is not an approved target site; SearchPageActions
+        # validates it against the search scope and leaves the tab blank again.
+        return await self._searches.read(self._active(), url, limit)
 
     async def perform_safe_interaction(
         self, action: ScheduledAction, rng: random.Random

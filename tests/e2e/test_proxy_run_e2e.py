@@ -12,7 +12,8 @@ from src.automation.models import RunSummary
 from src.automation.observer import RunObserver
 from src.database.repositories import SessionRepository
 from src.domain.enums import EventType, SessionStatus
-from tests.e2e.conftest import configure
+from tests.e2e.conftest import catalogue, configure
+from tests.helpers.fake_google import FakeGoogleServer
 from tests.helpers.fake_proxy import FakeHttpProxy
 
 pytestmark = pytest.mark.e2e
@@ -64,7 +65,9 @@ def use_proxy(container: AppContainer, port: int, **extra: object) -> None:
     )
 
 
-def test_session_runs_through_the_proxy(app: AppContainer, proxy: FakeHttpProxy) -> None:
+def test_session_runs_through_the_proxy(
+    app: AppContainer, proxy: FakeHttpProxy, fake_google: FakeGoogleServer
+) -> None:
     use_proxy(app, proxy.port)
     run_once(app)
     record = only_session(app)
@@ -73,10 +76,11 @@ def test_session_runs_through_the_proxy(app: AppContainer, proxy: FakeHttpProxy)
     assert record.browser_info["network_fence"] is False  # honest about the weaker containment
     started = next(e for e in record.events if e.event_type is EventType.BROWSER_STARTED)
     assert "proxy mode" in started.message
-    # Every page really went through the proxy, including the search simulator.
-    ports = {app.servers.search.port, app.servers.target.port}
+    # The visit went through the proxy; the ranking query did not, because it is
+    # an API call made by the application rather than a page loaded by the browser.
     seen = " ".join(proxy.requests)
-    assert all(f":{port}" in seen for port in ports)
+    assert f":{app.servers.target.port}" in seen
+    assert f":{fake_google.port}" not in seen
     assert "Lab proxy" in str(record.settings_snapshot["proxy"]["name"])
 
 
@@ -128,7 +132,7 @@ def test_dead_proxy_fails_the_session_with_a_clear_error(app: AppContainer) -> N
 
 
 def test_redirects_leaving_the_approved_sites_are_still_detected_in_proxy_mode(
-    app: AppContainer, proxy: FakeHttpProxy
+    app: AppContainer, proxy: FakeHttpProxy, fake_google: FakeGoogleServer
 ) -> None:
     site = app.target_sites.create(
         {
@@ -137,6 +141,7 @@ def test_redirects_leaving_the_approved_sites_are_still_detected_in_proxy_mode(
             "approved_for_automation": True,
         }
     )
+    fake_google.state.items = catalogue(site.base_url, position=2)
     use_proxy(app, proxy.port)
     configure(app, target_site_id=site.id)
     run_once(app)

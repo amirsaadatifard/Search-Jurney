@@ -35,17 +35,17 @@ def test_occupied_port_is_reported_as_warning(app_paths: AppPaths, database: Dat
         blocker.bind((LOOPBACK_HOST, 0))
         port = blocker.getsockname()[1]
         assert not is_port_available(port)
-        config = AppConfig(data_dir=app_paths.data_dir, search_port=port, target_port=18999)
+        config = AppConfig(data_dir=app_paths.data_dir, target_port=port)
         report = StartupHealthService(config, app_paths, database).run()
     by_name = {result.name: result for result in report.results}
-    assert by_name["Search simulator port"].status is HealthStatus.WARNING
+    assert by_name["Sample site port"].status is HealthStatus.WARNING
     assert report.worst is HealthStatus.WARNING
     assert report.passed == len(report.results) - 1
 
 
 def test_missing_directory_is_reported_as_error(app_paths: AppPaths, database: Database) -> None:
     app_paths.backups_dir.rmdir()
-    config = AppConfig(data_dir=app_paths.data_dir, search_port=18765, target_port=18766)
+    config = AppConfig(data_dir=app_paths.data_dir, target_port=18766)
     report = StartupHealthService(config, app_paths, database).run()
     assert report.worst is HealthStatus.ERROR
 

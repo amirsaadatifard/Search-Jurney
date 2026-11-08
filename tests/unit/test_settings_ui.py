@@ -115,24 +115,16 @@ def test_port_changes_are_written_to_the_env_file(
     page: SettingsPage, env_file: Path, window: MainWindow
 ) -> None:
     assert page.location_changes() == {}
-    page.search_port.setValue(9101)
     page.target_port.setValue(9102)
     page.save_locations()
-    assert env_file.read_text(encoding="utf-8").splitlines() == [
-        "SJAT_SEARCH_PORT=9101",
-        "SJAT_TARGET_PORT=9102",
-    ]
+    assert env_file.read_text(encoding="utf-8").splitlines() == ["SJAT_TARGET_PORT=9102"]
     assert "Restart" in window.notifier.toast.message()
 
 
-@pytest.mark.parametrize(
-    ("search", "target", "fragment"),
-    [(80, 9102, "search port"), (9101, 9101, "different ports"), (9101, 70000, "target port")],
-)
+@pytest.mark.parametrize(("target", "fragment"), [(0, "target port"), (70000, "target port")])
 def test_invalid_ports_are_rejected(
-    page: SettingsPage, env_file: Path, window: MainWindow, search: int, target: int, fragment: str
+    page: SettingsPage, env_file: Path, window: MainWindow, target: int, fragment: str
 ) -> None:
-    page.search_port.setValue(search)
     page.target_port.setValue(target)
     page.save_locations()
     assert not env_file.exists() and window.notifier.toast.tone() == "danger"
@@ -159,11 +151,11 @@ def test_restoring_defaults_removes_the_keys(
     page: SettingsPage, env_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env_file.write_text(
-        "# mine\nSJAT_SEARCH_PORT=9101\nSJAT_LOG_LEVEL=DEBUG\nOTHER=1\n", encoding="utf-8"
+        "# mine\nSJAT_TARGET_PORT=9101\nSJAT_LOG_LEVEL=DEBUG\nOTHER=1\n", encoding="utf-8"
     )
     accept(monkeypatch, False)
     page._reset_locations()
-    assert "SJAT_SEARCH_PORT" in env_file.read_text(encoding="utf-8")
+    assert "SJAT_TARGET_PORT" in env_file.read_text(encoding="utf-8")
     accept(monkeypatch, True)
     page._reset_locations()
     assert env_file.read_text(encoding="utf-8") == "# mine\nSJAT_LOG_LEVEL=DEBUG\nOTHER=1\n"

@@ -4,13 +4,44 @@
 > controlled website interaction for web testing and behavioural analysis.
 
 A desktop application (Python + PySide6) for defining, running and analysing **controlled** search-journey
-test scenarios: open a search page, type a keyword, locate a target site in the results, open it, stay
-for a configured dwell time while scrolling, record every step, and report on the outcome. You can watch
-each run live.
+test scenarios: look up a keyword on Google, see where your site actually ranks in those results, open it,
+stay for a configured dwell time while scrolling, record every step, and report on the outcome. You can
+watch each run live.
 
-It is a university capstone project. Everything runs against a **local search-engine simulator** and a
-**local sample website** that ship with the project, or against development/staging sites you explicitly
-approve.
+It is a university capstone project. Search data is **real**, and each scenario picks how it is read:
+
+* **Google in the browser** (the default, nothing to configure): Chromium opens Google's own results page
+  for the keyword, the position is read from that page and the browser is then used for the visit. No API
+  key, no quota, and the rank is exactly what this browser was shown. Be aware that automated access is
+  against Google's terms of service, so Google may answer with a captcha instead of results; the session
+  then fails and says so — the application never tries to get past it.
+* **Google API**: the official [Custom Search JSON API](https://developers.google.com/custom-search/v1/overview),
+  which is permitted and stable but needs your own API key and search-engine id (two minutes to set up,
+  see [Google setup](#google-setup)).
+
+Pages are opened only for sites you approve: your own production site, a development/staging site, or the
+**bundled local sample website** that ships with the project for offline practice.
+
+## Google setup
+
+1. Enable *Custom Search API* in a Google Cloud project and create an **API key**
+   (Cloud Console → APIs & Services → Credentials).
+2. Create a [Programmable Search Engine](https://programmablesearchengine.google.com/controlpanel/create)
+   and select **"Search the entire web"** — otherwise it only searches the sites you list and reports
+   nothing about yours. Copy its **search engine id** (`cx`).
+3. In the application open **Google Research** → *Google credentials and system checks*, enter both
+   values and press *Save credentials*. The key goes into the operating system's credential store (never
+   into the database); the engine id is a plain setting. *Test Google connection* then confirms them with
+   a single query, and *Run system checks* reports key, quota reachability, Chromium and the allowlist.
+
+*Only needed for the API channel.* Scenario runs with the browser channel ask for no key at all; the
+Google Research page stores its own observations through the API, so the two channels stay comparable.
+
+What the API's limits mean for this tool: ten results per page and at most one hundred per query, a free
+daily quota (Google bills beyond it), and a ranking that is *this API's* ranking — personalisation,
+location and browser history are not applied, so it can differ from what you see on google.com.
+The observed position is always labelled with the provider that produced it, and a session that cannot
+reach Google **fails** rather than falling back to made-up data.
 
 ## University use case
 
@@ -23,8 +54,9 @@ described in a report ([docs/PROJECT_REPORT_NOTES.md](docs/PROJECT_REPORT_NOTES.
 
 This tool is for QA testing and research in environments you control. By design it:
 
-- runs only against `localhost`, the bundled servers and explicitly approved test sites;
-- refuses public search engines and cannot be used to influence rankings, CTR, impressions or analytics;
+- opens only explicitly approved test sites (plus the bundled `localhost` sample website);
+- reads Google through its documented API and never browses, clicks or scrolls inside a search engine, so
+  it cannot influence rankings, CTR, impressions or analytics;
 - implements **no** CAPTCHA solving, anti-bot evasion, fingerprint spoofing, IP rotation, proxy scraping
   or ad clicking;
 - treats proxy profiles purely as a network-testing setting for controlled environments.
@@ -39,7 +71,8 @@ How this is enforced in code: [docs/SAFETY.md](docs/SAFETY.md).
 | Keywords | Library with tags and notes, bulk add, TXT/CSV import, CSV export |
 | Target sites | Approved-sites allowlist with environments; approval needs an explicit confirmation |
 | Profiles | Browser profiles (viewport, locale, time zone, headless …); proxy profiles with secure password storage and a connection test |
-| Local test environment | FastAPI search simulator (target at rank 1-10 or absent) and a five-page sample website |
+| Search data | Real Google ranking, read either from the results page in the browser (no key) or from the official Custom Search JSON API (key): rank, URL and result count per keyword; API queries are also stored as observations |
+| Sample website | A five-page local site (FastAPI) to practise visits on, with long pages, scrollable content and safety fixtures |
 | Automation | Playwright/Chromium journeys, 17-state state machine, pause / resume / stop, safe scrolling and page visits |
 | Live view | Current step, URL, target position, session clock, dwell countdown, live browser picture, event timeline |
 | Records | Session history with timeline, settings snapshot, errors and screenshots; reproducible (seed stored) |
@@ -90,8 +123,9 @@ macOS / Linux: `source .venv/bin/activate` instead of the activation line; the r
 python -m src.main
 ```
 
-On start-up the application verifies its folders, initialises logging, migrates the database, starts the
-two local servers, runs environment checks (see **About**) and opens the window.
+On start-up the application verifies its folders, initialises logging, migrates the database, runs
+environment checks (see **About**) and opens the window. The bundled sample website is started when the
+application needs it — a journey against a real domain binds no local port at all.
 
 **Like a normal program (no console window):** create a desktop shortcut once with
 
@@ -106,14 +140,15 @@ Other entry points:
 | Command | Purpose |
 | --- | --- |
 | `python -m src.main --demo` | Open the app and run the demo immediately |
-| `python -m src.local_servers` | Start only the simulator (`:8765`) and sample site (`:8766`) to look at them in a browser |
+| `python -m src.local_servers` | Start only the bundled sample website (`:8766`) to look at it in a browser |
 | `python -m src.main --smoke-test` | Start, then exit (used for checks) |
 
 ## Demo mode
 
-1. Start the application. The first launch creates a demo browser profile, a local target site, five
-   keywords and a demo scenario, so it works immediately.
-2. Press **Run demo** on the Dashboard (or start with `--demo`). It starts the local servers if needed,
+1. Start the application. The first launch creates a demo browser profile, the sample site as an approved
+   target, five keywords and a demo scenario, so it works immediately — and with no Google key, because
+   that demo journey visits the local site instead of asking about its ranking.
+2. Press **Run demo** on the Dashboard (or start with `--demo`). It starts the sample website if needed,
    repairs the demo data if you changed it, and runs **one** safe journey.
 3. The **Live Session View** opens: watch the step, URL, countdown, event timeline and the browser picture.
    Use Pause, Resume and Stop at any time.
@@ -122,9 +157,21 @@ Other entry points:
 ## How a session works
 
 ```
-open search page → type keyword → submit → parse ten results → find target
-   → click it → dwell (scroll, visit another page of the site) → screenshot → finish
+ask Google for the keyword → is the target site in the real results?
+   ├─ no  → record "not listed" (a result, not an error) and stop
+   └─ yes → record the observed position → open the site directly
+            → dwell (scroll, visit another page of the site) → screenshot → finish
 ```
+
+With the browser channel, "ask Google" means one navigation: Chromium opens
+`https://www.google.com/search?q=…`, the result links are read out of the page, and the tab is left blank
+again — no result is clicked, nothing is scrolled, a refusal is reported rather than worked around, and
+Google's page is never stored. The position found there is what the timeline records.
+
+With the API channel the ranking arrives before any browser exists, so a site that is not listed loads no
+page at all. Either way the *visit* uses the approved address of the site, never a link the search engine
+served. A journey whose target Google cannot index (the local sample site, a private development host)
+skips the ranking step and is recorded as a direct visit without a position.
 
 Every step is a state of a validated state machine, is written to the database as an event, and is
 shown live. Details: [docs/AUTOMATION_ENGINE.md](docs/AUTOMATION_ENGINE.md).
@@ -138,7 +185,8 @@ afterwards) or copy `.env.example` to `.env`:
 | --- | --- | --- |
 | `SJAT_DATA_DIR` | `data` | Base folder for database, logs, screenshots, backups, exports |
 | `SJAT_DATABASE_FILE` / `SJAT_LOGS_DIR` / `SJAT_SCREENSHOTS_DIR` | inside the data folder | Optional separate locations |
-| `SJAT_SEARCH_PORT` / `SJAT_TARGET_PORT` | `8765` / `8766` | Ports of the two local servers (1024-65535, different) |
+| `SJAT_TARGET_PORT` | `8766` | Port of the bundled sample website (1024-65535, bound to `127.0.0.1`) |
+| `SJAT_GOOGLE_API_KEY` / `SJAT_GOOGLE_ENGINE_ID` | unset | Google search credentials for headless or development use; the stored key from **Google Research** wins |
 | `SJAT_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ## Data locations
@@ -163,7 +211,7 @@ meaning after edits. Diagram and rules: [docs/DATABASE.md](docs/DATABASE.md).
 ```powershell
 pytest                 # all tests (Qt runs offscreen; no windows open)
 pytest tests/unit      # fast, no browser
-pytest -m e2e          # real Chromium + both local servers
+pytest -m e2e          # real Chromium, the sample site and a local Google API double
 ruff check src tests
 black --check src tests
 mypy src
@@ -180,9 +228,10 @@ src/
   app/               bootstrap, container, config, paths, health checks
   domain/            enums, exceptions, validation schemas
   database/          engine, ORM models, repositories, migrator
-  services/          business rules (scenarios, safety, reports, backup, …)
-  automation/        engine interface, state machine, runner, Playwright services
-  local_servers/     search simulator, sample website, server manager
+  services/          business rules (scenarios, Google research, safety, reports, backup, …)
+  search_providers/  the search API behind the ranking data (Google Custom Search JSON API)
+  automation/        engine interface, state machine, runner, Playwright services, rank observer
+  local_servers/     sample website, server manager
   networking/        credential store, proxy tester
   reports/           CSV / Excel / JSON exporters
   logging_config/    structured logging

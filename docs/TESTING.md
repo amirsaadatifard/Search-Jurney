@@ -5,8 +5,8 @@ The suite has three levels. Each level exists because the one below cannot prove
 | Level | Folder | What it uses | What it proves |
 | --- | --- | --- | --- |
 | Unit | `tests/unit/` | Pure code, in-memory or temporary SQLite, fake engine, Qt **offscreen** | Rules and logic: validation, safety, state machine, metrics, repositories, services, widgets and pages |
-| Integration | `tests/integration/` | Real SQLite files, real Alembic, real local servers on loopback | Layers working together: migrations match the models, both servers behave over real sockets |
-| End-to-end | `tests/e2e/` | **Real Chromium** (headless), both local servers, the real database, the real GUI | The product works: full journeys, pause/stop, safety blocking, proxy mode, the demo |
+| Integration | `tests/integration/` | Real SQLite files, real Alembic, real servers on loopback | Layers working together: migrations match the models, the sample site and the search-API double behave over real sockets |
+| End-to-end | `tests/e2e/` | **Real Chromium** (headless), the sample site, a local double of the Google search API, the real database, the real GUI | The product works: full journeys, ranking read from real-shaped API data, pause/stop, safety blocking, proxy mode, the demo |
 
 Qt tests use the `offscreen` platform (set in `tests/conftest.py`), so no window ever opens on your
 desktop. All tests write to temporary folders; none touches your real data, `.env` or credentials
@@ -36,16 +36,26 @@ The project brief required tests for the areas below; each maps to files here.
 
 | Required area | Tests |
 | --- | --- |
-| URL validation | `unit/test_safety_service.py` (normalisation, 18 rejection cases) |
+| URL validation | `unit/test_safety_service.py` (normalisation, 18 rejection cases, the search scope) |
 | Domain allowlist | `unit/test_safety_service.py`, `unit/test_management_services.py` |
 | Scenario validation, dwell range | `unit/test_management_services.py` (parametrised per field), `unit/test_repositories.py` (database check constraints) |
 | Repositories | `unit/test_repositories.py`, `integration/test_migrations.py` |
 | Report calculations | `unit/test_reports.py` (metrics with hand-computed numbers, filters, exporters) |
-| Local search simulator | `integration/test_local_servers.py` |
+| Sample website and server manager | `integration/test_local_servers.py` |
+| Search API client and ranking | `unit/test_google_research.py` against a local double of the API (`tests/helpers/fake_google.py`) |
+| Ranking step of a journey | `unit/test_session_runner.py` (fake rank observer, and the real page reader against a fake engine) and `e2e/test_automation_e2e.py` (the real HTTP double) |
+| Reading Google's page | `unit/test_google_search_page.py` (query URL, page classification, result numbering) and `unit/test_search_page_actions.py` (navigation, consent, captcha, blanking - a fake Playwright page, never google.com) |
+| The search scope's limits | `unit/test_safety_service.py` (`check_search_url`, `is_search_origin`, the fence's added origins) |
 | Target discovery | `integration/test_local_servers.py`, `unit/test_session_runner.py`, `e2e/` (positions 1, 4, 7, 10 and not listed) |
 | Session state machine | `unit/test_automation_core.py` (every legal and illegal transition), `unit/test_session_runner.py` |
 | Configuration import/export | `unit/test_phase10_services.py` |
-| End-to-end with both local sites | `e2e/test_automation_e2e.py`, `e2e/test_runner_ui_e2e.py`, `e2e/test_demo_e2e.py` |
+| End-to-end journey (real Chromium + the API double) | `e2e/test_automation_e2e.py`, `e2e/test_runner_ui_e2e.py`, `e2e/test_demo_e2e.py` |
+
+The e2e journeys never need Google credentials or the internet: `tests/helpers/fake_google.py` answers in
+Google's documented response format over a loopback socket, so the shipped HTTP client, the ranking
+service, the observation tables and the allowlist all run for real. The demo scenario keeps pointing at
+the *local* sample site, which is exactly the case that needs no search query at all - that is what makes
+"it works on the first start" testable offline.
 
 Also covered: pause/resume/stop (unit and real browser), the network fence and redirect blocking,
 proxy runs through a real local proxy, credential handling, backup/restore including failure and

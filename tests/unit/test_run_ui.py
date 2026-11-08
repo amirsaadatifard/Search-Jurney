@@ -128,20 +128,57 @@ def begin(window: MainWindow, fake_runs: FakeRuns, qtbot: QtBot, iterations: int
 
 
 # -- pure helpers ------------------------------------------------------------------- #
-def test_session_progress_increases_along_the_journey() -> None:
-    order = [
-        SessionState.INITIALIZING,
-        SessionState.STARTING_BROWSER,
-        SessionState.OPENING_SEARCH,
-        SessionState.ENTERING_KEYWORD,
-        SessionState.SEARCHING,
-        SessionState.ANALYZING_RESULTS,
-        SessionState.TARGET_FOUND,
-        SessionState.OPENING_TARGET,
-        SessionState.DWELLING,
-        SessionState.CAPTURING_RESULT,
-        SessionState.COMPLETED,
-    ]
+@pytest.mark.parametrize(
+    "order",
+    [
+        # a journey that reads its ranking from Google first
+        [
+            SessionState.INITIALIZING,
+            SessionState.SEARCHING,
+            SessionState.ANALYZING_RESULTS,
+            SessionState.TARGET_FOUND,
+            SessionState.STARTING_BROWSER,
+            SessionState.OPENING_TARGET,
+            SessionState.DWELLING,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
+        # a visit of an already observed (or unlistable) site
+        [
+            SessionState.INITIALIZING,
+            SessionState.TARGET_FOUND,
+            SessionState.STARTING_BROWSER,
+            SessionState.OPENING_TARGET,
+            SessionState.DWELLING,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
+        # the browser channel: the same work, with Chromium opened first
+        [
+            SessionState.INITIALIZING,
+            SessionState.OPENING_SEARCH,
+            SessionState.SEARCHING,
+            SessionState.ANALYZING_RESULTS,
+            SessionState.TARGET_FOUND,
+            SessionState.OPENING_TARGET,
+            SessionState.DWELLING,
+            SessionState.INTERACTING,
+            SessionState.DWELLING,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
+        # and a session that stops at the results
+        [
+            SessionState.INITIALIZING,
+            SessionState.SEARCHING,
+            SessionState.ANALYZING_RESULTS,
+            SessionState.TARGET_NOT_FOUND,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
+    ],
+)
+def test_session_progress_increases_along_the_journey(order: list[SessionState]) -> None:
     values = [session_progress(state) for state in order]
     assert values == sorted(values) and values[0] > 0 and values[-1] == 1.0
     assert session_progress(None) == 0 and session_progress(SessionState.IDLE) == 0
@@ -150,6 +187,26 @@ def test_session_progress_increases_along_the_journey() -> None:
     )
     assert session_progress(SessionState.DWELLING, 9) == session_progress(SessionState.DWELLING, 1)
     assert session_progress(SessionState.FAILED) == session_progress(SessionState.STOPPED) == 1.0
+
+
+def test_a_session_that_starts_the_browser_early_still_moves_forward(
+    window: MainWindow, fake_runs: FakeRuns, qtbot: QtBot
+) -> None:
+    """The browser channel opens Chromium inside its search step: the bar must not shrink."""
+    runs = window.runs
+    begin(window, fake_runs, qtbot)
+
+    def step(state: SessionState) -> None:
+        fake_runs.drive(lambda o: o.on_state_changed(state, state.value))
+        qtbot.waitUntil(lambda: runs.state is state)
+
+    before = runs.progress()
+    step(SessionState.STARTING_BROWSER)
+    during_search = runs.progress()
+    step(SessionState.OPENING_SEARCH)
+    after_search = runs.progress()
+    assert during_search > before
+    assert after_search >= during_search
 
 
 def test_event_tones() -> None:

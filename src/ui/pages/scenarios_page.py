@@ -7,17 +7,12 @@ from functools import partial
 
 from src.database.models import Scenario
 from src.ui.dialogs.scenario_dialog import ScenarioDialog
-from src.ui.formatting import format_datetime
+from src.ui.formatting import format_datetime, search_profile_label
 from src.ui.pages.base_page import PageContext
 from src.ui.pages.crud_page import CrudPage
 from src.ui.widgets.data_table import Column
 from src.ui.widgets.form_dialog import Submit
 from src.ui.widgets.status_badge import BadgeTone
-
-
-def _position_text(scenario: Scenario) -> str:
-    position = scenario.simulated_position
-    return "Not listed" if position is None else f"#{position}"
 
 
 def _dwell_text(scenario: Scenario) -> str:
@@ -29,8 +24,8 @@ class ScenariosPage(CrudPage[Scenario]):
     entity_plural = "scenarios"
     empty_icon = "scenarios"
     empty_description = (
-        "A scenario defines the keyword to search, the approved site to open "
-        "and how long to stay there."
+        "A scenario defines the keyword to look up on Google, the approved site to "
+        "open and how long to stay there."
     )
     supports_duplicate = True
     supports_toggle = True
@@ -39,7 +34,7 @@ class ScenariosPage(CrudPage[Scenario]):
         super().__init__(
             context,
             "Scenarios",
-            "Define what to search for, which approved site to open and how long to stay.",
+            "Read the real Google ranking for a keyword and visit the approved site from there.",
         )
         self._service = context.container.scenarios
         self.setup(
@@ -47,12 +42,7 @@ class ScenariosPage(CrudPage[Scenario]):
                 Column("Name", lambda s: s.name, stretch=True),
                 Column("Keyword", lambda s: s.keyword, width=190),
                 Column("Target site", lambda s: s.target_site.display_name, width=160),
-                Column(
-                    "Position",
-                    _position_text,
-                    sort_key=lambda s: s.simulated_position or 99,
-                    width=90,
-                ),
+                Column("Rank source", lambda s: search_profile_label(s.search_profile), width=150),
                 Column("Dwell", _dwell_text, sort_key=lambda s: s.min_dwell_seconds, width=90),
                 Column("Runs", lambda s: str(s.iterations), lambda s: s.iterations, width=70),
                 Column(

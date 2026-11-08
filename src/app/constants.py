@@ -23,7 +23,6 @@ ENV_PREFIX: Final = "SJAT_"
 
 # Local controlled servers ------------------------------------------------- #
 LOOPBACK_HOST: Final = "127.0.0.1"
-DEFAULT_SEARCH_PORT: Final = 8765
 DEFAULT_TARGET_PORT: Final = 8766
 
 # Storage ------------------------------------------------------------------ #
@@ -39,7 +38,10 @@ DEFAULT_MIN_DWELL_SECONDS: Final = 5
 DEFAULT_MAX_DWELL_SECONDS: Final = 15
 DEFAULT_TIMEOUT_SECONDS: Final = 30
 MAX_CONCURRENT_SESSIONS: Final = 1
-MAX_RESULT_POSITION: Final = 10
+
+# Search provider (Google Custom Search JSON API) --------------------------- #
+DEFAULT_SEARCH_RESULTS: Final = 10  # the API returns at most ten results per page
+MAX_SEARCH_RESULTS: Final = 100  # and never more than one hundred for one query
 
 # Main window -------------------------------------------------------------- #
 WINDOW_MIN_WIDTH: Final = 1180

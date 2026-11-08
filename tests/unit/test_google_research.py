@@ -464,7 +464,7 @@ def test_plans_for_the_direct_visit(
     google.approve_target(found.id)
 
     plan = google.plan_for(found.id, profile_id)
-    assert (plan.mode, plan.iterations, plan.search_url) == ("direct", 1, "")
+    assert (plan.mode, plan.iterations) == ("direct", 1)  # a visit, not a search
     assert (plan.target_url, plan.target_domain, plan.observed_position) == (
         TARGET,
         "kilnandclay.example",

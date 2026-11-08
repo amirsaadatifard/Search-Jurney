@@ -6,8 +6,9 @@ Every URL the automation is about to touch goes through
 1. The URL must be well formed, use ``http``/``https`` and carry no credentials.
 2. Public search engines are refused unconditionally, even if someone managed
    to put one on the allowlist.
-3. The origin must be on the allowlist: an enabled *and* approved target site,
-   or one of the application's own local servers.
+3. The origin must be on the allowlist: an enabled *and* approved target site.
+   Search engines are refused before this check, so adding one to the allowlist
+   by hand still does not let automation browse it.
 
 The service is pure logic. The allowlist arrives through a callable and DNS
 through an injectable resolver, so every rule is unit-testable offline.
@@ -51,6 +52,27 @@ SEARCH_ENGINE_LABELS: Final = frozenset(
         "seznam",
     }
 )
+# Everything the browser channel may open, as data rather than as a rule spread
+# over the code: one results page, plus the assets that page loads. It is a fixed
+# pair of origins rather than "any search engine" because reading a results page
+# through the browser is a deliberate exception to the rule below, and this keeps
+# it the smallest exception we can make - ``check_url`` still refuses every search
+# engine, and only a URL inside this scope is ever accepted.
+#
+# The values are overridable so a test can point the whole channel at a local
+# fixture; production never does.
+DEFAULT_SEARCH_ENTRY: Final = "https://www.google.com/search"
+DEFAULT_SEARCH_ASSETS: Final = ("https://www.google.com", "https://consent.google.com")
+
+
+@dataclass(frozen=True, slots=True)
+class SearchScope:
+    """The address the browser channel is allowed to read, and what it may load."""
+
+    entry: str = DEFAULT_SEARCH_ENTRY
+    assets: tuple[str, ...] = DEFAULT_SEARCH_ASSETS
+
+
 # Engines whose name is too generic to match as a bare label.
 SEARCH_ENGINE_DOMAINS: Final = frozenset(
     {"ask.com", "aol.com", "you.com", "brave.com", "kagi.com", "perplexity.ai", "mojeek.com"}
@@ -69,6 +91,7 @@ class Reason(StrEnum):
     CREDENTIALS_IN_URL = "credentials_in_url"
     PUBLIC_SEARCH_ENGINE = "public_search_engine"
     NOT_ALLOWLISTED = "not_allowlisted"
+    SEARCH_SCOPE = "search_scope"
     REDIRECT_BLOCKED = "redirect_blocked"
     NOT_LOCAL = "not_local"
 
@@ -242,17 +265,26 @@ class DomainSafetyService:
     def __init__(
         self,
         allowlist_provider: Callable[[], Iterable[AllowedOrigin]],
-        internal_origins: Iterable[AllowedOrigin] = (),
         resolver: HostResolver = system_resolver,
+        search_scope: SearchScope | None = None,
     ) -> None:
         self._allowlist_provider = allowlist_provider
-        self._internal_origins = tuple(internal_origins)
         self._resolver = resolver
+        scope = search_scope or SearchScope()
+        self._search_entry = normalize_url(scope.entry)
+        self._search_asset_origins = frozenset(
+            normalize_url(url).origin for url in scope.assets
+        ) | {self._search_entry.origin}
 
     # -- queries ---------------------------------------------------------------- #
     def allowed_origins(self) -> tuple[AllowedOrigin, ...]:
-        """Current allowlist: the app's own servers plus approved target sites."""
-        return (*self._internal_origins, *self._allowlist_provider())
+        """The approved target sites, read again on every call.
+
+        There is no exempt origin: not the search provider (which is an API, not a
+        page) and not the bundled sample website, which is on this list only
+        because the user approved it like any other site.
+        """
+        return tuple(self._allowlist_provider())
 
     def classify_host(self, host: str) -> HostKind:
         """Classify a host name or IP literal, resolving names when necessary.
@@ -292,6 +324,52 @@ class DomainSafetyService:
                 url=normalized.url,
             )
         return normalized
+
+    def check_search_url(self, url: str) -> NormalizedUrl:
+        """Return the normalised URL of a results-page read, or raise.
+
+        The one place a search engine may be opened, and only the address the
+        application itself built: same origin as the scope's entry, same path, a
+        query string, no credentials. Everything a *session* does afterwards -
+        the visit, the dwell, the interactions - still goes through
+        :meth:`check_url`, which refuses search engines outright.
+        """
+        normalized = normalize_url(url)
+        entry = self._search_entry
+        if normalized.origin != entry.origin or normalized.path.rstrip("/") != entry.path.rstrip(
+            "/"
+        ):
+            log.warning("search_scope_refused", url=normalized.origin + normalized.path)
+            raise SafetyViolationError(
+                "The search step may only open the results page it builds itself "
+                f"('{entry.url}'), not '{normalized.origin}{normalized.path}'.",
+                reason=Reason.SEARCH_SCOPE,
+                url=normalized.url,
+            )
+        if not normalized.query:
+            raise SafetyViolationError(
+                "A results page needs a keyword to search for.",
+                reason=Reason.SEARCH_SCOPE,
+                url=normalized.url,
+            )
+        return normalized
+
+    def is_search_origin(self, url: str) -> bool:
+        """Whether ``url`` is the results page itself or one of the assets it loads.
+
+        Used for two things only: letting the results page render, and refusing to
+        photograph it. Nothing else treats this as permission to browse.
+        """
+        try:
+            normalized = normalize_url(url)
+        except SafetyViolationError:
+            return False
+        return normalized.origin in self._search_asset_origins
+
+    def search_origins(self) -> tuple[AllowedOrigin, ...]:
+        """The origins the network fence must add for a browser-channel run."""
+        origins = {self._search_entry.origin, *self._search_asset_origins}
+        return tuple(AllowedOrigin.from_url(normalize_url(url)) for url in sorted(origins))
 
     def check_redirect(self, source_url: str, destination_url: str) -> NormalizedUrl:
         """Validate a navigation that happened *during* a session.
@@ -334,8 +412,9 @@ class DomainSafetyService:
         if is_public_search_engine(url.host):
             log.warning("safety_blocked", url=url.origin, reason=Reason.PUBLIC_SEARCH_ENGINE)
             raise SafetyViolationError(
-                f"'{url.host}' is a public search engine. This tool only works with the "
-                "local search simulator and test sites you control.",
+                f"'{url.host}' is a public search engine. Rankings are read through the "
+                "official search API and only sites you control are opened; a search engine "
+                "is never browsed.",
                 reason=Reason.PUBLIC_SEARCH_ENGINE,
                 url=url.url,
             )

@@ -13,6 +13,7 @@ from src.app.container import AppContainer
 from src.automation.models import RunSummary
 from src.database.repositories import SessionRepository
 from src.domain.enums import EventType, SessionState, SessionStatus
+from src.services.first_run_service import DEMO_SCENARIO_NAME
 from src.ui.main_window import MainWindow
 from src.ui.navigation import PageKey
 from src.ui.pages.live_view_page import LiveViewPage
@@ -61,7 +62,7 @@ def test_a_run_started_from_the_runner_page_is_watchable_and_recorded(
         # While it runs: live data reaches the widgets.
         qtbot.waitUntil(lambda: window.runs.state is SessionState.DWELLING, timeout=30_000)
         qtbot.waitUntil(lambda: live.preview.has_frame, timeout=15_000)
-        assert live.fields["scenario"].text() == "Demo - Local search journey"
+        assert live.fields["scenario"].text() == DEMO_SCENARIO_NAME
         assert live.fields["url"].text().startswith(app.servers.target.url)
         assert live.fields["position"].text() == "#4"
         assert live.status_badge.text() == "Running"
@@ -76,7 +77,7 @@ def test_a_run_started_from_the_runner_page_is_watchable_and_recorded(
     assert runner.counters["completed"].text() == "1 completed"
     assert runner.controls.start_button.isEnabled() and not runner.controls.stop_button.isEnabled()
     shown = "\n".join(live.timeline.plain_lines())
-    for expected in ("SEARCH_SUBMITTED", "TARGET_FOUND", "DWELL_COMPLETED", "SESSION_COMPLETED"):
+    for expected in ("SEARCH_OBSERVED", "TARGET_FOUND", "DWELL_COMPLETED", "SESSION_COMPLETED"):
         assert expected in shown
     assert shown == "\n".join(runner.timeline.plain_lines())  # both pages show the same timeline
 

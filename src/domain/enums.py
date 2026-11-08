@@ -19,13 +19,25 @@ class Environment(StrEnum):
 
 
 class SearchProfile(StrEnum):
-    """Search environment a scenario runs against.
+    """How a scenario finds out where the target site ranks.
 
-    Only the bundled simulator exists; the enum is the extension point for
-    other *controlled* search pages (e.g. a staging site's internal search).
+    ``GOOGLE_BROWSER`` opens Google's own results page in the test browser and
+    reads the position off it: no API key, no quota, and the rank is exactly
+    what this browser was shown. Google's terms of service forbid that kind of
+    automated access, so the page may answer with a captcha instead, and the
+    result can drift between runs.
+
+    ``GOOGLE_API`` asks the official Custom Search JSON API: permitted and
+    stable, but it needs an API key plus a search-engine id, and its ranking
+    omits personalisation and location.
+
+    Neither is used for a target Google can never list (the bundled loopback
+    sample site), which is visited directly - see
+    :meth:`src.automation.plan_factory.PlanFactory.from_scenario`.
     """
 
-    LOCAL_SIMULATOR = "LOCAL_SIMULATOR"
+    GOOGLE_BROWSER = "GOOGLE_BROWSER"
+    GOOGLE_API = "GOOGLE_API"
 
 
 class ProxyProtocol(StrEnum):

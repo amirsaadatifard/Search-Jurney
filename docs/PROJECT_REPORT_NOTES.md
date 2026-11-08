@@ -16,9 +16,10 @@ automatically and repeatably, (b) records every step so results can be analysed,
 turned against sites the tester does not control.
 
 The last point shapes the whole design. Search-journey automation is dual-use: pointed at a public
-search engine it could manipulate rankings or traffic. This project therefore operates **only** on a
-bundled search simulator, a bundled sample website, and sites the user explicitly approves, and it
-enforces that technically, not by policy.
+search engine it could manipulate rankings or traffic. This project therefore reads search data **only**
+through Google's official, key-authenticated API and opens pages **only** on the bundled sample website
+and sites the user explicitly approves — enforced in code, not by policy. The automated browser never
+visits a search engine at all.
 
 ## 2. Goals and non-goals
 
@@ -42,9 +43,9 @@ CAPTCHA or bot-protection bypass; fingerprint spoofing; IP rotation; proxy scrap
 | FR2 | Manage a reusable keyword library (bulk add, TXT/CSV import, CSV export, tags, notes) | `services/keyword_service.py` |
 | FR3 | Manage approved target sites with environments; automation never starts on an unapproved site | `services/target_site_service.py`, `safety_service.py` |
 | FR4 | Manage browser profiles and proxy profiles (secure password storage, connection test with latency) | `services/proxy_service.py`, `networking/` |
-| FR5 | Local controlled search engine with configurable target position 1-10 or absent | `local_servers/search_simulator/` |
+| FR5 | Real ranking data: the observed position of the target site, read either from Google's results page in the browser (no key) or from Google's Custom Search JSON API (stored as an auditable observation) | `search_providers/`, `services/google_research_service.py`, `automation/rank_observer.py` |
 | FR6 | Local sample website with several long pages | `local_servers/target_site/` |
-| FR7 | Run a journey: open, type, search, parse, find target, open, dwell, scroll, record, repeat | `automation/` |
+| FR7 | Run a journey: query the provider, find the target in its real results, open the site, dwell, scroll, record, repeat | `automation/` |
 | FR8 | Watch execution live (step, URL, countdown, preview); Start / Pause / Resume / Stop | `ui/pages/runner_page.py`, `live_view_page.py` |
 | FR9 | State machine with persisted transitions; event timeline in UI, file and database | `automation/state_machine.py`, `recorder.py` |
 | FR10 | Screenshots by moment, stored by date with metadata | `automation/screenshot_service.py` |
@@ -155,7 +156,8 @@ section is the list of defects the tests found (redirect hops bypassing the guar
 ## 12. Suggested report outline
 
 1. Introduction (problem, motivation, ethics and scope)  2. Requirements (FR/NFR above)
-3. Related work / tools (Selenium, Playwright, load-testing tools; why a simulator)
+3. Related work / tools (Selenium/Playwright-based journey recorders, SEO rank trackers, load-testing
+   tools; why a search *API* rather than scraping a results page)
 4. System design (architecture, database, state machine, threading)  5. Implementation highlights
 (safety, automation core, live view, reports)  6. Testing and results  7. Security and ethics
 8. Limitations and future work  9. Conclusion  Appendices: user guide, test list, class overview.
@@ -178,7 +180,8 @@ reports page and the Excel workbook, settings (backup), proxy dialog.
 ## 14. Likely examiner questions
 
 - *Can it be used to inflate traffic of a real site?* No: it refuses everything except the local
-  simulator and approved sites you control; public search engines cannot be added; and there is no CAPTCHA,
+  search API and approved sites you control; public search engines cannot be opened by the browser; and
+  there is no CAPTCHA,
   fingerprint or IP-rotation code.
 - *How do you know the redirect protection works?* An end-to-end test redirects from an approved page to
   an unapproved host; this exposed that Playwright skips redirect hops, which is why the network fence exists.

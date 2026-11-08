@@ -1,7 +1,10 @@
-"""End-to-end: real Chromium + the local simulator + the sample site + the database.
+"""End-to-end: real Chromium + a real HTTP search API + the sample site + the database.
 
 Every test drives the application the way the GUI does: through
-``AutomationRunService`` on its worker thread. Nothing leaves 127.0.0.1.
+``AutomationRunService`` on its worker thread. Nothing leaves 127.0.0.1 - the ranking
+comes from ``tests/helpers/fake_google.py``, a double that answers in Google's
+documented format, so the path under test (client, matching, observation storage,
+allowlist, browser, records) is the shipped one.
 """
 
 from __future__ import annotations
@@ -18,7 +21,8 @@ from src.automation.observer import RunObserver
 from src.database.models import AutomationSession
 from src.database.repositories import SessionRepository
 from src.domain.enums import EventType, ScreenshotKind, SessionState, SessionStatus
-from tests.e2e.conftest import configure
+from tests.e2e.conftest import catalogue, configure
+from tests.helpers.fake_google import FakeGoogleServer
 
 pytestmark = pytest.mark.e2e
 RUN_TIMEOUT = 90.0
@@ -76,7 +80,7 @@ def event_types(record: AutomationSession) -> list[EventType]:
 
 
 # -- the main journey ------------------------------------------------------------ #
-def test_full_search_journey(app: AppContainer) -> None:
+def test_full_journey_reads_the_ranking_then_visits(app: AppContainer) -> None:
     probe = run(app)
 
     assert probe.summary is not None and (probe.summary.completed, probe.summary.total) == (1, 1)
@@ -96,12 +100,9 @@ def test_full_search_journey(app: AppContainer) -> None:
     types = event_types(record)
     ordered = [
         EventType.SESSION_STARTED,
-        EventType.BROWSER_STARTED,
-        EventType.SEARCH_PAGE_OPENED,
-        EventType.KEYWORD_ENTERED,
-        EventType.SEARCH_SUBMITTED,
-        EventType.RESULTS_RECEIVED,
+        EventType.SEARCH_OBSERVED,
         EventType.TARGET_FOUND,
+        EventType.BROWSER_STARTED,
         EventType.TARGET_OPENED,
         EventType.DWELL_STARTED,
         EventType.DWELL_COMPLETED,
@@ -117,8 +118,11 @@ def test_full_search_journey(app: AppContainer) -> None:
         probe.states[0] is SessionState.INITIALIZING and probe.states[-1] is SessionState.COMPLETED
     )
     assert SessionState.DWELLING in probe.states
-    assert probe.pages[0].startswith(app.servers.search.url)
+    assert probe.pages[0].startswith(app.servers.target.url)  # the visit is the first page
     assert probe.pages[-1].startswith(app.servers.target.url)
+    assert probe.states.index(SessionState.SEARCHING) < probe.states.index(
+        SessionState.STARTING_BROWSER
+    )  # the ranking came first
     assert probe.ticks[0] == record.planned_dwell_seconds and probe.ticks[-1] == 0
     assert not app.runs.is_running
 
@@ -127,11 +131,7 @@ def test_screenshots_are_saved_and_recorded(app: AppContainer) -> None:
     run(app)
     (record,) = sessions(app)
     by_kind = {shot.kind: shot for shot in record.screenshots}
-    assert set(by_kind) == {
-        ScreenshotKind.SEARCH_RESULTS,
-        ScreenshotKind.TARGET_OPENED,
-        ScreenshotKind.SESSION_END,
-    }
+    assert set(by_kind) == {ScreenshotKind.TARGET_OPENED, ScreenshotKind.SESSION_END}
     for kind, shot in by_kind.items():
         path = Path(shot.file_path)
         assert path.is_file() and path.stat().st_size == shot.size_bytes > 1000
@@ -141,15 +141,14 @@ def test_screenshots_are_saved_and_recorded(app: AppContainer) -> None:
             f"session_{record.id}_keyword_handmade-ceramic-mugs_{kind.value.lower()}.png"
         )
         assert (shot.width, shot.height) == (1280, 800)
-    assert by_kind[ScreenshotKind.SEARCH_RESULTS].page_url.startswith(app.servers.search.url)
-    assert by_kind[ScreenshotKind.TARGET_OPENED].page_url.startswith(app.servers.target.url)
-    assert event_types(record).count(EventType.SCREENSHOT_CAPTURED) == 3
+    assert all(shot.page_url.startswith(app.servers.target.url) for shot in record.screenshots)
+    assert event_types(record).count(EventType.SCREENSHOT_CAPTURED) == 2
 
 
 def test_screenshot_policy_can_disable_captures(app: AppContainer) -> None:
     from src.services.settings_service import SettingKey
 
-    app.settings.set(SettingKey.SCREENSHOT_POLICY, {"search_results": False, "session_end": False})
+    app.settings.set(SettingKey.SCREENSHOT_POLICY, {"target_opened": True, "session_end": False})
     run(app)
     (record,) = sessions(app)
     assert [shot.kind for shot in record.screenshots] == [ScreenshotKind.TARGET_OPENED]
@@ -168,24 +167,31 @@ def test_dwell_includes_scrolling_and_stays_on_the_approved_site(app: AppContain
     assert record.scroll_actions == len(scrolls)
     assert SessionState.INTERACTING in probe.states
     target = app.servers.target.url
-    assert all(url.startswith((app.servers.search.url, target)) for url in probe.pages)
+    assert all(url.startswith(target) for url in probe.pages)
     for event in interactions:
         if event.event_type is EventType.PAGE_NAVIGATION:
             assert event.data["visited"].startswith(target)
     assert record.status is SessionStatus.COMPLETED
 
 
-# -- result positions ---------------------------------------------------------------- #
+# -- the observed position -------------------------------------------------------------- #
 @pytest.mark.parametrize("position", [1, 7, 10])
-def test_target_is_found_at_each_simulated_position(app: AppContainer, position: int) -> None:
-    configure(app, simulated_position=position, min_dwell_seconds=1, max_dwell_seconds=1)
+def test_target_is_found_at_each_position_the_provider_lists(
+    app: AppContainer, fake_google: FakeGoogleServer, position: int
+) -> None:
+    """The session's position is the API's answer, whatever it happens to be."""
+    fake_google.state.items = catalogue(f"{app.servers.target.url}/", position)
+    configure(app, min_dwell_seconds=1, max_dwell_seconds=1)
     run(app)
     (record,) = sessions(app)
     assert record.status is SessionStatus.COMPLETED and record.target_position == position
+    assert record.results_count == 10 and record.observation_id is not None
 
 
-def test_target_not_listed_is_reported_without_dwelling(app: AppContainer) -> None:
-    configure(app, simulated_position=None)
+def test_target_not_listed_is_reported_without_dwelling(
+    app: AppContainer, fake_google: FakeGoogleServer
+) -> None:
+    fake_google.state.items = catalogue(f"{app.servers.target.url}/", None)
     probe = run(app)
     (record,) = sessions(app)
     assert record.status is SessionStatus.TARGET_NOT_FOUND
@@ -197,10 +203,8 @@ def test_target_not_listed_is_reported_without_dwelling(app: AppContainer) -> No
     types = event_types(record)
     assert EventType.TARGET_NOT_FOUND in types
     assert not {EventType.TARGET_OPENED, EventType.DWELL_STARTED} & set(types)
-    assert {s.kind for s in record.screenshots} == {
-        ScreenshotKind.SEARCH_RESULTS,
-        ScreenshotKind.SESSION_END,
-    }
+    assert record.screenshots == []  # no page was ever loaded, so there is nothing to photograph
+    assert probe.pages == []
     assert probe.summary is not None and probe.summary.target_not_found == 1
 
 
@@ -227,7 +231,9 @@ def test_several_iterations_run_back_to_back(app: AppContainer, incognito: bool)
 
 
 # -- safety --------------------------------------------------------------------------------- #
-def test_redirect_to_a_non_approved_site_is_blocked(app: AppContainer) -> None:
+def test_redirect_to_a_non_approved_site_is_blocked(
+    app: AppContainer, fake_google: FakeGoogleServer
+) -> None:
     site = app.target_sites.create(
         {
             "display_name": "Redirecting page",
@@ -235,6 +241,7 @@ def test_redirect_to_a_non_approved_site_is_blocked(app: AppContainer) -> None:
             "approved_for_automation": True,
         }
     )
+    fake_google.state.items = catalogue(site.base_url, position=2)
     configure(app, target_site_id=site.id)
     probe = run(app)
 
@@ -265,14 +272,27 @@ def test_revoked_approval_ends_the_session_immediately(app: AppContainer) -> Non
     assert EventType.SAFETY_BLOCKED in event_types(record)
 
 
-def test_missing_search_simulator_fails_cleanly(app: AppContainer) -> None:
-    app.servers.search.stop()
-    app.servers.search.start = lambda: None  # type: ignore[method-assign]
+def test_an_unreachable_search_api_fails_the_session_without_inventing_a_rank(
+    app: AppContainer, fake_google: FakeGoogleServer
+) -> None:
+    """No answer is never treated as an answer: the session fails, nothing is claimed."""
+    fake_google.stop()
     run(app)
     (record,) = sessions(app)
     assert record.status is SessionStatus.FAILED
-    assert record.error_type in {"NavigationError", "AutomationTimeoutError"}
+    assert record.error_type == "GoogleNetworkError"
     assert record.state is SessionState.FAILED
+    assert (record.target_found, record.target_position) == (None, None)
+    assert EventType.BROWSER_STARTED not in event_types(record)  # it never got that far
+
+
+def test_a_run_without_credentials_is_refused_before_it_starts(app: AppContainer) -> None:
+    from src.domain.exceptions import InvalidConfigurationError
+
+    app.google.credentials.clear_key()
+    with pytest.raises(InvalidConfigurationError, match="Google"):
+        app.runs.start([app.scenarios.search()[0].id])
+    assert sessions(app) == []  # no half-written session behind it
 
 
 # -- stop and pause ------------------------------------------------------------------------------ #

@@ -15,7 +15,6 @@ from src.services.safety_service import (
     normalize_url,
 )
 
-SIMULATOR = AllowedOrigin("127.0.0.1", 8765)
 DNS = {
     "staging.shop.test": ["10.0.0.12"],
     "public.example.test": ["93.184.216.34"],
@@ -27,7 +26,6 @@ DNS = {
 def make_service(*allowed: AllowedOrigin) -> DomainSafetyService:
     return DomainSafetyService(
         allowlist_provider=lambda: list(allowed),
-        internal_origins=[SIMULATOR],
         resolver=lambda host: DNS.get(host, []),
     )
 
@@ -131,12 +129,14 @@ def test_search_engine_is_refused_even_when_allowlisted() -> None:
 
 
 # -- allowlist ---------------------------------------------------------------------- #
-def test_default_allowlist_contains_only_the_simulator() -> None:
+def test_nothing_is_allowed_without_an_approved_site() -> None:
+    """The service has no exempt origin: an empty allowlist means a full stop."""
     service = make_service()
-    assert service.is_allowed("http://127.0.0.1:8765/search?q=mugs")
-    assert not service.is_allowed("http://127.0.0.1:8766/")
-    assert not service.is_allowed("http://localhost:8765/")  # different host string
-    assert not service.is_allowed("https://example.com/")
+    assert service.allowed_origins() == ()
+    for url in ("http://127.0.0.1:8765/", "http://127.0.0.1:8766/", "https://example.com/"):
+        with pytest.raises(SafetyViolationError) as error:
+            service.check_url(url)
+        assert reason_of(error) is Reason.NOT_ALLOWLISTED
 
 
 def test_explicit_port_entry_allows_that_port_only() -> None:
@@ -229,6 +229,72 @@ def test_local_environment_requires_a_loopback_host() -> None:
         with pytest.raises(SafetyViolationError) as error:
             service.validate_target_candidate(url, Environment.LOCAL)
         assert reason_of(error) is Reason.NOT_LOCAL
+
+
+# -- the search step's own, narrow scope -------------------------------------------------- #
+def test_a_results_page_is_accepted_by_the_search_check_only() -> None:
+    service = make_service()
+    url = "https://www.google.com/search?q=ceramic+mugs"
+    assert service.check_search_url(url).query == "q=ceramic+mugs"
+    with pytest.raises(SafetyViolationError):
+        service.check_url(url)  # the visit itself is still confined to approved sites
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.google.com/search?q=x",  # not encrypted
+        "https://www.google.com:8443/search?q=x",  # not the page Google serves
+        "https://www.google.com/maps?q=x",  # another page on the same host
+        "https://www.google.com/search",  # no keyword at all
+        "https://evil.example/search?q=x",  # not Google
+        "https://google.com/search?q=x",  # not the host that serves the page
+        "https://www.google.com.hk/search?q=x",  # nor a look-alike of it
+    ],
+)
+def test_anything_that_is_not_one_query_page_on_google_is_refused(url: str) -> None:
+    service = make_service()
+    with pytest.raises(SafetyViolationError) as error:
+        service.check_search_url(url)
+    assert reason_of(error) is Reason.SEARCH_SCOPE
+
+
+def test_the_search_scope_covers_the_page_and_its_own_assets_only() -> None:
+    service = make_service()
+    assert service.is_search_origin("https://www.google.com/x.css")
+    assert service.is_search_origin("https://consent.google.com/#/details")
+    assert not service.is_search_origin("https://fonts.gstatic.com/f.woff2")  # a third party
+    assert not service.is_search_origin("https://shop.example/")  # a target is not the search page
+    assert not service.is_search_origin("not a url")
+
+
+def test_the_fence_opens_for_the_results_page_and_nothing_more() -> None:
+    from src.automation.network_fence import bypass_entries
+
+    origins = make_service().search_origins()
+    assert {str(origin) for origin in origins} == {"www.google.com", "consent.google.com"}
+    entries = bypass_entries(origins)
+    assert "www.google.com:443" in entries and "consent.google.com:80" in entries
+    assert not any("gstatic" in entry or "fonts" in entry for entry in entries)
+
+
+def test_a_test_can_point_the_whole_channel_somewhere_else() -> None:
+    """The scope is data, so the shipped rules can be exercised against a local double."""
+    from src.services.safety_service import SearchScope
+
+    scoped = DomainSafetyService(
+        allowlist_provider=lambda: [],
+        search_scope=SearchScope(
+            entry="https://results.localhost:8443/search",
+            assets=("https://results.localhost:8443",),
+        ),
+    )
+    scoped_url = "https://results.localhost:8443/search?q=x"
+    assert scoped.check_search_url(scoped_url).origin == "https://results.localhost:8443"
+    assert scoped.is_search_origin(scoped_url)
+    assert not scoped.is_search_origin("https://www.google.com/search?q=x")
+    with pytest.raises(SafetyViolationError):
+        scoped.check_search_url("https://www.google.com/search?q=x")
 
 
 def test_staging_candidate_accepts_other_hosts_but_never_search_engines() -> None:
