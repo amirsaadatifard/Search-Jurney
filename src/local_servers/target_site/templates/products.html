@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "base.html" import placeholder %}
+{% block title %}Products - {{ site_name }}{% endblock %}
+{% block style %}
+    .note { background: var(--soft); border-radius: 12px; padding: 20px 24px; margin-top: 40px; color: var(--muted); }
+{% endblock %}
+{% block content %}
+  <section id="catalogue">
+    <h1>Products</h1>
+    <p class="lead">{{ products|length }} pieces in the current range. Colours vary slightly from batch to batch.</p>
+    <div class="grid" id="product-grid">
+      {% for product in products %}
+      <article class="card" id="{{ product.slug }}" data-product="{{ product.slug }}">
+        {{ placeholder(product.name, product.hue) }}
+        <div class="body"><h3>{{ product.name }}</h3><p>{{ product.summary }}</p><span class="price">&euro; {{ product.price }}</span></div>
+      </article>
+      {% endfor %}
+    </div>
+    <div class="note" id="care-note">
+      <strong>Care:</strong> all pieces are dishwasher and microwave safe. Avoid sudden temperature changes.
+      Read <a href="/article#care">how to look after stoneware</a>.
+    </div>
+  </section>
+{% endblock %}

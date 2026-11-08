@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "base.html" import placeholder %}
+{% block title %}About - {{ site_name }}{% endblock %}
+{% block style %}
+    .team .placeholder { border-radius: 12px 12px 0 0; }
+    .timeline { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
+    .timeline li { padding: 0 0 26px 24px; position: relative; }
+    .timeline li::before { content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px;
+                           border-radius: 50%; background: var(--accent); }
+    .timeline strong { display: block; font-family: Georgia, serif; font-size: 20px; }
+{% endblock %}
+{% block content %}
+  <section id="about">
+    <h1>About the studio</h1>
+    <p class="lead">Three people, two kilns and a shared belief that the things you use every day deserve care.</p>
+    <p>{{ site_name }} is a small ceramics studio. We make functional stoneware and teach others how to make their own. Nothing leaves the building without being picked up, turned over and checked by one of us.</p>
+    <p>We keep the range deliberately short. A dozen shapes, refined over years, are more useful than a hundred made once. When a design stops improving, we stop changing it.</p>
+  </section>
+
+  <section id="team">
+    <h2>The team</h2>
+    <p class="lead">You will meet all of us if you visit on a Saturday.</p>
+    <div class="grid team">
+      {% for name, role, hue in team %}
+      <article class="card">{{ placeholder(name, hue, "1 / 1") }}<div class="body"><h3>{{ name }}</h3><p>{{ role }}</p></div></article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section id="history">
+    <h2>Our story so far</h2>
+    <p class="lead">Twelve years in five steps.</p>
+    <ol class="timeline">
+      {% for year, text in timeline %}<li><strong>{{ year }}</strong>{{ text }}</li>{% endfor %}
+    </ol>
+  </section>
+
+  <section id="values">
+    <h2>How we work</h2>
+    <p>We buy clay from a single regional supplier and recycle every trimming. Failed pieces are crushed and reused as grog, which gives our clay body its slightly speckled look. Packaging is paper and cardboard only.</p>
+    <p>Workshops are capped at eight people so that everyone gets time on a wheel. Beginners are welcome; most of our students have never touched clay before.</p>
+    <p><a class="button" href="/contact">Get in touch</a></p>
+  </section>
+{% endblock %}

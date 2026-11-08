@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "base.html" import placeholder %}
+{% block title %}{{ title }} - {{ site_name }}{% endblock %}
+{% block style %}
+    article.longform { max-width: 720px; margin: 0 auto; padding-top: 56px; }
+    article.longform h1 { font-size: 40px; margin: 0 0 12px; }
+    .meta { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+    .toc { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 24px; margin: 28px 0; }
+    .toc ol { margin: 8px 0 0; padding-left: 20px; }
+    article.longform h2 { font-size: 26px; margin: 44px 0 12px; scroll-margin-top: 90px; }
+    article.longform p { font-size: 17.5px; margin: 0 0 18px; }
+    article.longform .placeholder { border-radius: 12px; margin: 24px 0; }
+{% endblock %}
+{% block content %}
+  <article class="longform" id="article">
+    <h1>{{ title }}</h1>
+    <div class="meta">Studio journal &middot; 9 minute read</div>
+    {{ placeholder("A mug taking shape on the wheel", 32, "16 / 9") }}
+    <nav class="toc" aria-label="Contents">
+      <strong>In this article</strong>
+      <ol>{% for section in sections %}<li><a href="#{{ section.anchor }}">{{ section.heading.split(". ", 1)[1] }}</a></li>{% endfor %}</ol>
+    </nav>
+    {% for section in sections %}
+    <h2 id="{{ section.anchor }}">{{ section.heading }}</h2>
+    {% for paragraph in section.paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+    {% if loop.index is divisibleby 3 %}{{ placeholder(section.heading, 40 + loop.index * 35, "16 / 9") }}{% endif %}
+    {% endfor %}
+    <p><a class="button" href="/products">See the finished pieces</a></p>
+  </article>
+{% endblock %}

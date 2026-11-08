@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data (kept out of version control; folders are recreated on startup)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/logs/*
+data/screenshots/*
+data/backups/*
+data/exports/*
+!data/**/.gitkeep
+
+# Local configuration and secrets
+.env
+
+# IDE
+.idea/
+.vscode/

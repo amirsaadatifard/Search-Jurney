@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}{{ brand }}{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #ffffff; --text: #1d2330; --muted: #5b6475; --faint: #8a93a3; --line: #e2e6ec;
+      --accent: #0f766e; --accent-dark: #0b5a54; --link: #1a4fb4; --visited: #6a3fa0;
+      --surface: #f5f7f9; --notice-bg: #fff6dd; --notice-text: #7a5300;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+           color: var(--text); background: var(--bg); line-height: 1.5; }
+    a { color: var(--link); }
+    .notice { background: var(--notice-bg); color: var(--notice-text); font-size: 13px;
+              text-align: center; padding: 6px 12px; border-bottom: 1px solid #f0dfa8; }
+    .logo { font-weight: 700; letter-spacing: -0.5px; color: var(--accent); text-decoration: none; }
+    .logo span { color: var(--text); }
+    .search-form { display: flex; gap: 8px; }
+    .search-form input[type=search] {
+      flex: 1; min-width: 0; font: inherit; padding: 11px 16px; border: 1px solid #c9d0da;
+      border-radius: 8px; outline: none; background: #fff; color: var(--text);
+    }
+    .search-form input[type=search]:focus { border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, .15); }
+    .search-form button { font: inherit; font-weight: 600; padding: 0 22px; border: 0;
+      border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+    .search-form button:hover { background: var(--accent-dark); }
+    footer { color: var(--faint); font-size: 13px; padding: 28px 24px; text-align: center; }
+    footer a { color: var(--muted); }
+    {% block style %}{% endblock %}
+  </style>
+</head>
+<body>
+  <div class="notice">Simulated results &middot; local test environment &middot; not a real search engine</div>
+  {% block body %}{% endblock %}
+  <footer>{{ brand }} search simulator &middot; <a href="/admin">Configuration</a></footer>
+</body>
+</html>

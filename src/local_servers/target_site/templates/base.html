@@ -1,0 +1,80 @@
+{% macro placeholder(label, hue, ratio="4 / 3") %}
+<div class="placeholder" role="img" aria-label="{{ label }}"
+     style="aspect-ratio: {{ ratio }}; background: linear-gradient(135deg, hsl({{ hue }} 42% 78%), hsl({{ hue + 24 }} 38% 62%));">
+  <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M18 20h28l-3 26a6 6 0 0 1-6 5H27a6 6 0 0 1-6-5z" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="3" stroke-linejoin="round"/><path d="M46 26h5a5 5 0 0 1 0 10h-6" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="3"/></svg>
+  <span>{{ label }}</span>
+</div>
+{% endmacro %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}{{ site_name }}{% endblock %}</title>
+  <style>
+    :root { --bg: #faf7f2; --surface: #ffffff; --text: #2a2622; --muted: #6b635a; --line: #e6dfd4;
+            --accent: #a4502b; --accent-dark: #833e20; --soft: #f1e9dd; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+           color: var(--text); background: var(--bg); line-height: 1.65; }
+    a { color: var(--accent); }
+    h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; line-height: 1.2; }
+    .demo-banner { background: #2a2622; color: #f3ece2; font-size: 13px; text-align: center; padding: 6px 12px; }
+    .site-header { position: sticky; top: 0; z-index: 10; background: rgba(250, 247, 242, .96);
+                   border-bottom: 1px solid var(--line); }
+    .site-header .inner { max-width: 1080px; margin: 0 auto; padding: 14px 24px; display: flex;
+                          align-items: center; justify-content: space-between; gap: 24px; }
+    .brand { font-family: Georgia, serif; font-size: 22px; font-weight: 700; color: var(--text); text-decoration: none; }
+    nav#main-nav { display: flex; gap: 4px; flex-wrap: wrap; }
+    nav#main-nav a { padding: 7px 14px; border-radius: 999px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 15px; }
+    nav#main-nav a:hover { background: var(--soft); color: var(--text); }
+    nav#main-nav a[aria-current=page] { background: var(--accent); color: #fff; }
+    main { max-width: 1080px; margin: 0 auto; padding: 0 24px 72px; }
+    section { padding: 56px 0 8px; }
+    section > h2 { font-size: 30px; margin: 0 0 8px; }
+    section > p.lead { color: var(--muted); margin: 0 0 28px; max-width: 640px; }
+    .button { display: inline-block; background: var(--accent); color: #fff; padding: 12px 24px;
+              border-radius: 8px; text-decoration: none; font-weight: 600; }
+    .button:hover { background: var(--accent-dark); }
+    .button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+    .grid { display: grid; gap: 24px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .card .body { padding: 16px 18px 20px; }
+    .card h3 { margin: 0 0 4px; font-size: 18px; }
+    .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+    .price { display: block; margin-top: 10px; font-weight: 700; color: var(--text); }
+    .placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center;
+                   gap: 8px; color: rgba(255, 255, 255, .92); font-size: 13px; font-weight: 600; }
+    .placeholder svg { width: 54px; height: 54px; }
+    .site-footer { border-top: 1px solid var(--line); background: var(--soft); color: var(--muted); font-size: 14px; }
+    .site-footer .inner { max-width: 1080px; margin: 0 auto; padding: 32px 24px; display: flex;
+                          justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+    .site-footer a { color: var(--muted); margin-right: 16px; }
+    {% block style %}{% endblock %}
+  </style>
+</head>
+<body data-page="{{ active }}">
+  <div class="demo-banner">Demo website for automated testing &middot; fictional business &middot; nothing here is for sale</div>
+  <header class="site-header">
+    <div class="inner">
+      <a class="brand" href="/">{{ site_name }}</a>
+      <nav id="main-nav" aria-label="Main">
+        {% for link in navigation %}
+        <a href="{{ link.path }}" data-nav="{{ link.path }}" {% if link.path == active %}aria-current="page"{% endif %}>{{ link.label }}</a>
+        {% endfor %}
+      </nav>
+    </div>
+  </header>
+  <main id="content">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer" id="footer">
+    <div class="inner">
+      <div><strong>{{ site_name }}</strong><br>Handmade stoneware and weekend workshops.</div>
+      <div>{% for link in navigation %}<a href="{{ link.path }}">{{ link.label }}</a>{% endfor %}</div>
+    </div>
+  </footer>
+</body>
+</html>
