@@ -3,17 +3,21 @@
 The session runner (state machine, timeline, dwell loop) is written against this
 interface only. The Playwright implementation lives in ``playwright_engine``;
 tests substitute a fake, so every runner rule is verified without a browser.
+
+The engine opens *pages*; it never searches. Reading the real ranking of a site
+is the job of a search provider
+(:mod:`src.search_providers`), so no browser is ever driven against a search
+engine.
 """
 
 from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from typing import Any
 
 from src.automation.interaction_service import ScheduledAction
-from src.automation.models import InteractionOutcome, ResultItem, SessionPlan
+from src.automation.models import InteractionOutcome, SessionPlan
 from src.domain.enums import ScreenshotKind
 
 
@@ -29,37 +33,18 @@ class AutomationEngine(ABC):
     def current_url(self) -> str:
         """URL of the page the session is on ('' before the first navigation)."""
 
+    @property
+    def is_open(self) -> bool:
+        """Whether a page is currently open (``False`` before the browser starts)."""
+        return False
+
     @abstractmethod
     async def start_session(self, plan: SessionPlan) -> dict[str, Any]:
         """Launch the browser if needed, open an isolated context and return browser info."""
 
     @abstractmethod
-    async def navigate(self, url: str) -> str:
-        """Open ``url`` and return the final URL after redirects."""
-
-    @abstractmethod
     async def open_url(self, url: str) -> str:
-        """Open ``url`` directly (no search page involved); return the final URL."""
-
-    @abstractmethod
-    async def fill_search(self, keyword: str) -> None:
-        """Type ``keyword`` into the search box."""
-
-    @abstractmethod
-    async def submit_search(self) -> None:
-        """Submit the search and wait for the results page."""
-
-    @abstractmethod
-    async def get_results(self) -> list[ResultItem]:
-        """Parse the results currently on screen."""
-
-    @abstractmethod
-    def find_target(self, results: Sequence[ResultItem], target_url: str) -> ResultItem | None:
-        """Return the result that points to the target site, or ``None``."""
-
-    @abstractmethod
-    async def open_target(self, item: ResultItem) -> str:
-        """Open the result as a user would; return the URL that loaded."""
+        """Open ``url`` and return the final URL after redirects."""
 
     @abstractmethod
     async def perform_safe_interaction(

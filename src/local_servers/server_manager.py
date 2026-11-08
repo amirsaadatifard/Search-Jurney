@@ -1,4 +1,4 @@
-"""Runs the bundled FastAPI applications inside the desktop process.
+"""Runs the bundled FastAPI sample website inside the desktop process.
 
 Each server is a ``uvicorn.Server`` on its own daemon thread with its own event
 loop, bound to the loopback interface only. Shutdown is cooperative (uvicorn's
@@ -17,9 +17,6 @@ from fastapi import FastAPI
 
 from src.app.constants import LOOPBACK_HOST
 from src.domain.exceptions import AppError
-from src.local_servers.search_simulator.app import SERVICE_NAME as SEARCH_SERVICE_NAME
-from src.local_servers.search_simulator.app import UrlValidator, create_search_app
-from src.local_servers.search_simulator.state import SimulatorConfig, SimulatorState
 from src.local_servers.target_site.app import SERVICE_NAME as TARGET_SERVICE_NAME
 from src.local_servers.target_site.app import create_target_app
 from src.logging_config import get_logger
@@ -126,22 +123,19 @@ def _serve(server: uvicorn.Server, name: str) -> None:
 
 
 class LocalServerManager:
-    """Owns the search simulator and the sample target site."""
+    """Owns the bundled sample website (a safe site to visit, never a search source).
 
-    def __init__(
-        self, search_port: int, target_port: int, url_validator: UrlValidator | None = None
-    ) -> None:
+    Search results do not come from a local server any more: they come from the
+    real Google API (:mod:`src.search_providers`), so the only server the
+    application still needs is the sample site the demo journeys open.
+    """
+
+    def __init__(self, target_port: int) -> None:
         self.target = LocalServer(TARGET_SERVICE_NAME, create_target_app(), target_port)
-        self.simulator_state = SimulatorState(SimulatorConfig(target_url=f"{self.target.url}/"))
-        self.search = LocalServer(
-            SEARCH_SERVICE_NAME,
-            create_search_app(self.simulator_state, url_validator),
-            search_port,
-        )
 
     @property
-    def servers(self) -> tuple[LocalServer, LocalServer]:
-        return (self.search, self.target)
+    def servers(self) -> tuple[LocalServer, ...]:
+        return (self.target,)
 
     @property
     def all_running(self) -> bool:
@@ -155,10 +149,7 @@ class LocalServerManager:
         return any(server.port == port and server.is_running for server in self.servers)
 
     def start_all(self) -> list[str]:
-        """Start both servers. Returns error messages; an empty list means success.
-
-        A server that fails does not prevent the other one from starting.
-        """
+        """Start every bundled server. Returns error messages; an empty list means success."""
         errors: list[str] = []
         for server in self.servers:
             try:
@@ -171,7 +162,3 @@ class LocalServerManager:
     def stop_all(self) -> None:
         for server in self.servers:
             server.stop()
-
-    def configure_search(self, config: SimulatorConfig) -> None:
-        """Set which target the simulator lists and at which rank."""
-        self.simulator_state.set(config)

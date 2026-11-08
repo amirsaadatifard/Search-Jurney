@@ -24,7 +24,23 @@ from src.domain.enums import ScreenshotKind
 from src.domain.enums import SessionState as S
 from src.domain.exceptions import InvalidStateTransitionError, SessionCancelledError
 
+# The journey of a scenario whose ranking is read from the search provider.
 HAPPY_PATH = [
+    S.INITIALIZING,
+    S.SEARCHING,
+    S.ANALYZING_RESULTS,
+    S.TARGET_FOUND,
+    S.STARTING_BROWSER,
+    S.OPENING_TARGET,
+    S.DWELLING,
+    S.INTERACTING,
+    S.DWELLING,
+    S.CAPTURING_RESULT,
+    S.COMPLETED,
+]
+
+# What a session recorded when the project browsed a local results page looked like.
+LEGACY_PATH = [
     S.INITIALIZING,
     S.STARTING_BROWSER,
     S.OPENING_SEARCH,
@@ -33,8 +49,6 @@ HAPPY_PATH = [
     S.ANALYZING_RESULTS,
     S.TARGET_FOUND,
     S.OPENING_TARGET,
-    S.DWELLING,
-    S.INTERACTING,
     S.DWELLING,
     S.CAPTURING_RESULT,
     S.COMPLETED,
@@ -58,15 +72,18 @@ def test_happy_path_and_history() -> None:
 
 
 def test_target_not_found_path() -> None:
+    """A site the real results do not list is a finished session, not a failure."""
     machine = SessionStateMachine()
-    advance(
-        machine,
-        *HAPPY_PATH[:6],
-        S.TARGET_NOT_FOUND,
-        S.CAPTURING_RESULT,
-        S.COMPLETED,
-    )
+    advance(machine, *HAPPY_PATH[:3], S.TARGET_NOT_FOUND, S.CAPTURING_RESULT, S.COMPLETED)
     assert machine.is_terminal
+    assert machine.history[-3][0] is S.ANALYZING_RESULTS
+
+
+def test_legacy_browsed_search_path_is_still_readable() -> None:
+    """Old sessions keep their states; the machine does not reject history it wrote."""
+    machine = SessionStateMachine()
+    advance(machine, *LEGACY_PATH)
+    assert machine.state is S.COMPLETED and machine.is_terminal
 
 
 @pytest.mark.parametrize(
@@ -74,8 +91,8 @@ def test_target_not_found_path() -> None:
     [
         ([], S.SEARCHING),  # IDLE cannot jump ahead
         ([], S.COMPLETED),
-        (HAPPY_PATH[:2], S.SEARCHING),  # skipping OPENING_SEARCH
-        (HAPPY_PATH[:6], S.OPENING_TARGET),  # must pass through TARGET_FOUND
+        (HAPPY_PATH[:2], S.STARTING_BROWSER),  # the ranking is read before a browser exists
+        (HAPPY_PATH[:3], S.OPENING_TARGET),  # must pass through TARGET_FOUND
         (HAPPY_PATH[:9], S.COMPLETED),  # dwelling must capture the result first
         (HAPPY_PATH, S.DWELLING),  # nothing leaves a terminal state
         (HAPPY_PATH[:3], S.INITIALIZING),  # no going back
@@ -91,7 +108,7 @@ def test_illegal_transitions_are_rejected(path: list[S], illegal: S) -> None:
     assert machine.state is before
 
 
-@pytest.mark.parametrize("steps", range(1, 13))
+@pytest.mark.parametrize("steps", range(1, len(HAPPY_PATH)))
 def test_every_active_state_can_fail_or_stop(steps: int) -> None:
     for finish in (SessionStateMachine.fail, SessionStateMachine.stop):
         machine = SessionStateMachine()
@@ -140,6 +157,13 @@ def test_pause_and_finish_require_a_started_session() -> None:
 def test_allowed_from_matches_documentation() -> None:
     assert SessionStateMachine.allowed_from(S.ANALYZING_RESULTS) == {
         S.TARGET_FOUND,
+        S.TARGET_NOT_FOUND,
+        S.FAILED,
+        S.STOPPED,
+    }
+    assert SessionStateMachine.allowed_from(S.INITIALIZING) == {
+        S.STARTING_BROWSER,
+        S.SEARCHING,
         S.TARGET_NOT_FOUND,
         S.FAILED,
         S.STOPPED,
@@ -255,16 +279,22 @@ def test_screenshot_naming_is_safe_and_meaningful() -> None:
     assert (
         screenshot_filename(102, "gold", ScreenshotKind.SEARCH_RESULTS)
         == "session_102_keyword_gold_search_results.png"
-    )
+    )  # the kind of a session recorded years from now still names a file
     for kind in ScreenshotKind:
         name = screenshot_filename(1, 'a/b\\c:"d"', kind)
         assert "/" not in name and "\\" not in name and ":" not in name
 
 
 def test_screenshot_policy_switches() -> None:
-    policy = ScreenshotPolicy(search_results=False, error=True)
-    assert not policy.allows(ScreenshotKind.SEARCH_RESULTS)
+    policy = ScreenshotPolicy(target_opened=False, error=True)
+    assert not policy.allows(ScreenshotKind.TARGET_OPENED)
     assert policy.allows(ScreenshotKind.ERROR)
+
+
+def test_a_journey_never_photographs_a_results_page() -> None:
+    """``SEARCH_RESULTS`` only exists for old sessions, so no policy can enable it."""
+    for policy in (ScreenshotPolicy(), ScreenshotPolicy(True, True, True)):
+        assert not policy.allows(ScreenshotKind.SEARCH_RESULTS)
 
 
 def test_proxy_settings_never_reveal_the_password() -> None:

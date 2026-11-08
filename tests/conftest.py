@@ -48,7 +48,7 @@ def database() -> Iterator[Database]:
 @pytest.fixture
 def container(app_paths: AppPaths) -> Iterator[AppContainer]:
     """Fully bootstrapped service container backed by temporary storage."""
-    config = AppConfig(data_dir=app_paths.data_dir, search_port=18765, target_port=18766)
+    config = AppConfig(data_dir=app_paths.data_dir, target_port=18766)
     instance = bootstrap(config=config, paths=app_paths, credentials=InMemoryCredentialStore())
     yield instance
     shutdown(instance)
@@ -67,7 +67,7 @@ def fake_google() -> Iterator[Any]:
 @pytest.fixture
 def google_container(app_paths: AppPaths, fake_google: Any) -> Iterator[AppContainer]:
     """Application whose Google provider talks to the local test double."""
-    config = AppConfig(data_dir=app_paths.data_dir, search_port=18765, target_port=18766)
+    config = AppConfig(data_dir=app_paths.data_dir, target_port=18766)
     instance = bootstrap(
         config=config,
         paths=app_paths,

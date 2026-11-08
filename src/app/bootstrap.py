@@ -1,7 +1,8 @@
 """Application bootstrap and shutdown.
 
 ``bootstrap`` contains no Qt code so the whole service graph can be created in
-tests and command-line tools without a display.
+tests and command-line tools without a display. Search data is wired here: the
+one provider both the Google Research page and every scenario run share.
 """
 
 from __future__ import annotations
@@ -9,11 +10,12 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from src.app.config import AppConfig
-from src.app.constants import APP_NAME, APP_VERSION, LOOPBACK_HOST
+from src.app.constants import APP_NAME, APP_VERSION
 from src.app.container import AppContainer
 from src.app.health import StartupHealthService
 from src.app.paths import PROJECT_ROOT, AppPaths
 from src.automation.plan_factory import PlanFactory
+from src.automation.rank_observer import GoogleRankObserver
 from src.automation.run_service import AutomationRunService
 from src.database.base import utcnow
 from src.database.migrator import DatabaseMigrator
@@ -37,7 +39,7 @@ from src.services.google_research_service import GoogleResearchService
 from src.services.keyword_service import KeywordService
 from src.services.proxy_service import ProxyService
 from src.services.report_service import ReportService
-from src.services.safety_service import AllowedOrigin, DomainSafetyService
+from src.services.safety_service import DomainSafetyService
 from src.services.scenario_service import ScenarioService
 from src.services.session_service import SessionService
 from src.services.settings_service import SettingsService
@@ -79,35 +81,41 @@ def bootstrap(
     settings = SettingsService(database)
     FirstRunService(database, settings, config).run_if_needed()
 
-    # The search simulator is the application's own server and always in scope;
-    # every other origin must be an approved target site.
-    safety = DomainSafetyService(
-        allowlist_provider=DatabaseAllowlist(database),
-        internal_origins=[AllowedOrigin(LOOPBACK_HOST, config.search_port)],
-    )
-    servers = LocalServerManager(
-        config.search_port, config.target_port, url_validator=safety.check_url
-    )
+    # Every origin a journey may load must be an approved target site; the
+    # application no longer keeps a server of its own inside the allowlist, and
+    # search data comes from the provider below rather than from a page.
+    safety = DomainSafetyService(allowlist_provider=DatabaseAllowlist(database))
+    servers = LocalServerManager(config.target_port)
     scenarios = ScenarioService(database, settings)
     credentials = credentials or KeyringCredentialStore()
-    runs = AutomationRunService(database, safety, paths, settings, servers, scenarios, credentials)
     keywords = KeywordService(database)
     target_sites = TargetSiteService(database, safety)
     browser_profiles = BrowserProfileService(database)
     proxies = ProxyService(database, credentials)
     first_run = FirstRunService(database, settings, config)
     google_credentials = GoogleCredentialManager(credentials, settings)
-    plan_factory = PlanFactory(settings, f"{servers.search.url}/", credentials)
+    plan_factory = PlanFactory(settings, credentials)
+    provider = GoogleCustomSearchProvider(
+        google_credentials.pair, endpoint=google_endpoint or GOOGLE_ENDPOINT
+    )
     google = GoogleResearchService(
         database,
         google_credentials,
-        GoogleCustomSearchProvider(
-            google_credentials.pair, endpoint=google_endpoint or GOOGLE_ENDPOINT
-        ),
+        provider,
         target_sites,
         safety,
         plan_factory,
         internet_probe=_probe_of(google_endpoint or GOOGLE_ENDPOINT),
+    )
+    runs = AutomationRunService(
+        database,
+        safety,
+        paths,
+        settings,
+        servers,
+        scenarios,
+        credentials,
+        rank_observer=GoogleRankObserver(google),
     )
     health_service = StartupHealthService(config, paths, database, servers)
     health_report = health_service.run()

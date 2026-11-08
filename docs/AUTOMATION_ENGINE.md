@@ -1,24 +1,31 @@
 # Automation engine
 
-The engine runs a scenario as a series of *sessions* (one per iteration). Each session follows the
-same journey against the local, controlled environment:
+The engine runs a scenario as a series of *sessions* (one per iteration). Each session follows the same
+journey, and the first step of that journey is a data call, not a page:
 
 ```
-open search page → type keyword → submit → read results → find target
-   → open target → dwell (scroll / visit pages) → screenshot → finish
+ask the search provider where the target ranks → listed?  no → record "not listed", finish
+                                       yes ↓
+                        open the target URL directly → dwell (scroll / visit pages) → screenshot → finish
 ```
+
+Nothing is typed into a search engine and no result is clicked; the position comes from the provider's
+real answer (`src/automation/rank_observer.py`) and the browser only ever loads the approved site. A
+journey whose target Google cannot list (the bundled sample website, a private host) skips the ranking
+step and is recorded as a direct visit with no position claimed.
 
 ## Layers
 
 | Module (`src/automation/`) | Responsibility |
 | --- | --- |
-| `models.py` | `SessionPlan` (immutable copy of a scenario), results, summaries |
-| `plan_factory.py` | Builds a plan from a stored scenario and the application settings |
+| `models.py` | `SessionPlan` (immutable copy of a scenario), `RankObservation`, results, summaries |
+| `plan_factory.py` | Builds a plan from a stored scenario and the settings, and chooses its mode (`google` / `direct`) |
+| `rank_observer.py` | Reads the real ranking for a keyword from the search provider before the browser starts |
 | `engine.py` | `AutomationEngine`: the abstract browser backend |
 | `playwright_engine.py` | Chromium implementation, composed of the services below |
 | `browser_manager.py` | Browser/context lifecycle, request guard, redirect watcher |
 | `network_fence.py` | Chromium arguments that confine the browser to approved origins |
-| `search_actions.py` / `target_actions.py` | Search-page and result-list operations |
+| `target_actions.py` | Opening the approved target URL and verifying where the browser landed |
 | `interaction_service.py` | Dwell time choice, interaction schedule, scrolling, page visits |
 | `screenshot_service.py` | Files under `data/screenshots/YYYY-MM-DD/` plus database rows |
 | `state_machine.py` | Legal order of states, pause/resume, terminal states |
@@ -34,12 +41,19 @@ end-to-end tests then run the same runner against real Chromium.
 ## State machine
 
 ```
-IDLE → INITIALIZING → STARTING_BROWSER → OPENING_SEARCH → ENTERING_KEYWORD → SEARCHING
-     → ANALYZING_RESULTS ─┬→ TARGET_FOUND → OPENING_TARGET → DWELLING ⇄ INTERACTING
-                          │                                     └→ CAPTURING_RESULT → COMPLETED
-                          └→ TARGET_NOT_FOUND → CAPTURING_RESULT → COMPLETED
+                                  ┌→ STARTING_BROWSER ─┐                     (direct visit: no search step)
+IDLE → INITIALIZING ──────────────┤                    ↓
+                                  └→ SEARCHING → ANALYZING_RESULTS → TARGET_FOUND → OPENING_TARGET
+                                                    │                                   ↓
+                                                    └→ TARGET_NOT_FOUND       DWELLING ⇄ INTERACTING
+                                                                                     └→ CAPTURING_RESULT → COMPLETED
 any active state → FAILED | STOPPED | PAUSED (resume returns to the interrupted state)
 ```
+
+`SEARCHING` is the provider query and `ANALYZING_RESULTS` the domain match against its answer, so the
+browser is only started for a target the real results actually list. `OPENING_SEARCH` and
+`ENTERING_KEYWORD` remain in the enum - they belong to sessions recorded when the project browsed a
+local results page - and the state machine still accepts them so old sessions stay readable.
 
 Illegal transitions raise `InvalidStateTransitionError`. Every transition updates the session row, so
 the database always shows the current state; each timeline event also records the state it happened in.
@@ -78,7 +92,10 @@ would fail the same way; a stop ends it by request.
 | Situation | Exception | Result |
 | --- | --- | --- |
 | Chromium missing / cannot launch | `BrowserLaunchError` | Session failed, run aborted |
-| Page does not load, element missing | `NavigationError`, `SearchError` | Session failed |
+| Google key / engine id missing or rejected | `GoogleAuthenticationError` | Session failed (never falls back to invented data) |
+| Google quota used up | `GoogleQuotaError` | Session failed, run continues |
+| Google unreachable or answers badly | `GoogleNetworkError`, `GoogleSearchError` | Session failed |
+| Page does not load | `NavigationError` | Session failed |
 | Step exceeds the configured timeout | `AutomationTimeoutError` | Session failed |
 | URL outside the approved scope | `SafetyViolationError` | Session failed, `SAFETY_BLOCKED` event |
 | User pressed Stop | `SessionCancelledError` | Session `STOPPED` |
@@ -124,8 +141,11 @@ opens the real Chromium window.
   pausable, stoppable and report a live countdown, none of which is browser-specific.
 - The interface adds `close()` (release the browser at the end of a run) and `drain_blocked()` (report
   requests the guard blocked), which the Playwright lifecycle and the timeline need.
-- The runner records domain events (`SEARCH_SUBMITTED`, `TARGET_FOUND`, ...) rather than one event per
+- The runner records domain events (`SEARCH_OBSERVED`, `TARGET_FOUND`, ...) rather than one event per
   state change; the state is stored on each event and on the session row.
+- `AutomationRunService.start_plans()` refuses a run whose journeys need the search provider while its
+  credentials are missing, instead of letting the first iteration fail: the answer is the same either
+  way, but a run that never started leaves no half-written session behind.
 
 ## Known limitations
 

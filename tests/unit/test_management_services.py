@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from src.app.container import AppContainer
-from src.domain.enums import Environment
+from src.domain.enums import Environment, SearchProfile
 from src.domain.exceptions import EntityInUseError, EntityNotFoundError, InvalidConfigurationError
 from src.domain.schemas import (
     BrowserProfileInput,
@@ -60,7 +60,11 @@ def test_scenario_schema_accepts_valid_input_and_applies_defaults() -> None:
     )
     assert values.name == "My scenario"
     assert values.keyword == "gold ring"
-    assert (values.iterations, values.simulated_position, values.scroll_enabled) == (1, 3, True)
+    assert (values.iterations, values.search_profile, values.scroll_enabled) == (
+        1,
+        SearchProfile.GOOGLE,
+        True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -77,10 +81,8 @@ def test_scenario_schema_accepts_valid_input_and_applies_defaults() -> None:
         ({"iterations": "many"}, "iterations"),
         ({"delay_between_iterations": -1}, "delay_between_iterations"),
         ({"max_scroll_actions": 500}, "max_scroll_actions"),
-        ({"simulated_position": 0}, "simulated_position"),
-        ({"simulated_position": 11}, "simulated_position"),
         ({"target_site_id": None}, "target_site_id"),
-        ({"search_profile": "GOOGLE"}, "search_profile"),
+        ({"search_profile": "LOCAL_SIMULATOR"}, "search_profile"),  # the removed value is refused
         ({"unknown_field": 1}, "unknown_field"),
     ],
 )
@@ -163,7 +165,7 @@ def test_first_run_seeds_demo_data_once(container: AppContainer) -> None:
 def test_demo_site_is_on_the_allowlist(container: AppContainer) -> None:
     port = container.config.target_port
     assert container.safety.is_allowed(f"http://127.0.0.1:{port}/products")
-    assert container.safety.is_allowed(f"http://127.0.0.1:{container.config.search_port}/")
+    assert not container.safety.is_allowed(f"http://127.0.0.1:{port - 1}/")  # no other local port
     assert not container.safety.is_allowed("http://127.0.0.1:9/")
     assert not container.safety.is_allowed("https://example.com/")
 
@@ -318,9 +320,9 @@ def test_scenario_create_update_and_relationships(container: AppContainer) -> No
     assert scenario.browser_profile.name == DEMO_BROWSER_NAME
 
     updated = service.update(
-        scenario.id, scenario_data(container, iterations=7, simulated_position=None)
+        scenario.id, scenario_data(container, iterations=7, search_profile="GOOGLE")
     )
-    assert (updated.iterations, updated.simulated_position) == (7, None)
+    assert (updated.iterations, updated.search_profile) == (7, SearchProfile.GOOGLE.value)
     assert service.get(scenario.id).iterations == 7
     assert "name" in field_errors(service.create, scenario_data(container))
     assert "name" in field_errors(

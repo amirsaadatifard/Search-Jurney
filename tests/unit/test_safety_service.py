@@ -15,7 +15,6 @@ from src.services.safety_service import (
     normalize_url,
 )
 
-SIMULATOR = AllowedOrigin("127.0.0.1", 8765)
 DNS = {
     "staging.shop.test": ["10.0.0.12"],
     "public.example.test": ["93.184.216.34"],
@@ -27,7 +26,6 @@ DNS = {
 def make_service(*allowed: AllowedOrigin) -> DomainSafetyService:
     return DomainSafetyService(
         allowlist_provider=lambda: list(allowed),
-        internal_origins=[SIMULATOR],
         resolver=lambda host: DNS.get(host, []),
     )
 
@@ -131,12 +129,14 @@ def test_search_engine_is_refused_even_when_allowlisted() -> None:
 
 
 # -- allowlist ---------------------------------------------------------------------- #
-def test_default_allowlist_contains_only_the_simulator() -> None:
+def test_nothing_is_allowed_without_an_approved_site() -> None:
+    """The service has no exempt origin: an empty allowlist means a full stop."""
     service = make_service()
-    assert service.is_allowed("http://127.0.0.1:8765/search?q=mugs")
-    assert not service.is_allowed("http://127.0.0.1:8766/")
-    assert not service.is_allowed("http://localhost:8765/")  # different host string
-    assert not service.is_allowed("https://example.com/")
+    assert service.allowed_origins() == ()
+    for url in ("http://127.0.0.1:8765/", "http://127.0.0.1:8766/", "https://example.com/"):
+        with pytest.raises(SafetyViolationError) as error:
+            service.check_url(url)
+        assert reason_of(error) is Reason.NOT_ALLOWLISTED
 
 
 def test_explicit_port_entry_allows_that_port_only() -> None:

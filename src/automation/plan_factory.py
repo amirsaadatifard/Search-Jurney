@@ -1,12 +1,37 @@
-"""Builds immutable :class:`SessionPlan` objects from stored scenarios."""
+"""Builds immutable :class:`SessionPlan` objects from stored scenarios.
+
+The factory also decides *how* a journey reaches its target:
+
+* a normal scenario asks the real search provider where the target site ranks
+  before the browser starts (:data:`MODE_GOOGLE`);
+* a target registered as a *local* site — the bundled sample website, which
+  Google can never list — is opened directly (:data:`MODE_DIRECT`) and no
+  ranking is claimed for it;
+* a Google Research visit is always direct: the ranking belongs to the
+  observation the user already made.
+"""
 
 from __future__ import annotations
 
 from dataclasses import fields
 
 from src.app.constants import DEFAULT_TIMEOUT_SECONDS
-from src.automation.models import BrowserSettings, ProxySettings, ScreenshotPolicy, SessionPlan
-from src.database.models import BrowserProfile, ProxyProfile, Scenario, SearchObservation
+from src.automation.models import (
+    MODE_DIRECT,
+    MODE_GOOGLE,
+    BrowserSettings,
+    ProxySettings,
+    ScreenshotPolicy,
+    SessionPlan,
+)
+from src.database.models import (
+    BrowserProfile,
+    ProxyProfile,
+    Scenario,
+    SearchObservation,
+    TargetSite,
+)
+from src.domain.enums import Environment
 from src.domain.exceptions import InvalidConfigurationError
 from src.networking.credentials import CredentialStore, proxy_secret_key
 from src.search_providers import result_domain
@@ -16,12 +41,23 @@ DIRECT_VISIT_SCROLLS = 5
 _POLICY_FIELDS = {field.name for field in fields(ScreenshotPolicy)}
 
 
+def skips_rank_observation(site: TargetSite) -> bool:
+    """Whether a journey may skip the ranking step.
+
+    Only a site registered as a *local* environment: something on this computer
+    is never in Google's index, so asking costs quota to learn what is already
+    known and the bundled demo would need credentials to run at all. Any other
+    environment is observed - guessing where a real site ranks would be worse
+    than asking, and "not listed" is itself the finding.
+    """
+    return site.environment is Environment.LOCAL
+
+
 class PlanFactory:
-    def __init__(
-        self, settings: SettingsService, search_url: str, credentials: CredentialStore
-    ) -> None:
+    """Turns a stored scenario (or an observation) into an immutable run plan."""
+
+    def __init__(self, settings: SettingsService, credentials: CredentialStore) -> None:
         self._settings = settings
-        self._search_url = search_url
         self._credentials = credentials
 
     def screenshot_policy(self) -> ScreenshotPolicy:
@@ -67,10 +103,8 @@ class PlanFactory:
             scenario_id=None,
             scenario_name=f"Google Research: {observation.query}"[:120],
             keyword=observation.query,
-            search_url="",
             target_url=observation.target_url,
             target_domain=result_domain(observation.target_url),
-            simulated_position=None,
             min_dwell_seconds=dwell_min,
             max_dwell_seconds=dwell_max,
             iterations=1,  # one session per click: this mode never repeats visits
@@ -84,7 +118,7 @@ class PlanFactory:
             proxy=None,
             screenshots=self.screenshot_policy(),
             timeout_seconds=defaults.timeout_seconds,
-            mode="direct",
+            mode=MODE_DIRECT,
             observation_id=observation.id,
             observed_position=observation.target_position,
             observed_result_count=observation.result_count,
@@ -92,6 +126,7 @@ class PlanFactory:
         )
 
     def from_scenario(self, scenario: Scenario) -> SessionPlan:
+        """Build the journey of one scenario: real ranking first, then the visit."""
         browser = scenario.browser_profile
         proxy = scenario.proxy_profile
         if proxy is not None and not proxy.enabled:
@@ -99,14 +134,13 @@ class PlanFactory:
                 f"Proxy profile '{proxy.name}' is disabled. Enable it or change the scenario."
             )
         site = scenario.target_site
+        defaults = self._settings.automation_defaults()
         return SessionPlan(
             scenario_id=scenario.id,
             scenario_name=scenario.name,
             keyword=scenario.keyword,
-            search_url=self._search_url,
             target_url=site.base_url,
             target_domain=site.domain,
-            simulated_position=scenario.simulated_position,
             min_dwell_seconds=scenario.min_dwell_seconds,
             max_dwell_seconds=scenario.max_dwell_seconds,
             iterations=scenario.iterations,
@@ -144,6 +178,10 @@ class PlanFactory:
             timeout_seconds=int(
                 self._settings.get(SettingKey.DEFAULT_TIMEOUT, DEFAULT_TIMEOUT_SECONDS)
             ),
+            mode=MODE_DIRECT if skips_rank_observation(site) else MODE_GOOGLE,
+            search_language=defaults.search_language,
+            search_country=defaults.search_country,
+            requested_results=defaults.requested_results,
         )
 
     def _password(self, proxy: ProxyProfile) -> str | None:

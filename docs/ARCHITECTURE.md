@@ -7,30 +7,30 @@ the automation runner testable without a window, and the GUI testable without a 
 ## Layers and dependencies
 
 ```
-            ┌────────────────────────────── src/ui ──────────────────────────────┐
-            │ pages · dialogs · widgets · theme · run controller (Qt signals)     │
-            └───────────────┬───────────────────────────────────────┬─────────────┘
-                            │ calls                                 │ observes
-                            ▼                                       ▼
-   ┌──────────── src/services ────────────┐             ┌──────── src/automation ────────┐
-   │ scenario · keyword · target site ·   │  plans      │ runner · state machine ·        │
-   │ proxy · browser profile · safety ·   │────────────►│ engine interface · Playwright   │
-   │ report · dashboard · backup ·        │             │ engine · run service            │
-   │ config transfer · demo · settings    │             └───────────────┬────────────────┘
-   └───────┬───────────────┬──────────────┘                             │ uses
-           │               │                                            ▼
-           ▼               ▼                              ┌──── src/local_servers ─────┐
-   src/database      src/networking                       │ search simulator · sample   │
-   (models, repos)   (credentials, proxy test)            │ site · server manager       │
-           │                                              └────────────────────────────┘
-           ▼
-        src/domain  (enums · exceptions · validation schemas — depends on nothing)
+src/ui              PySide6 windows, pages, dialogs, live run view
+  ├─▶ src/services      called from the GUI
+  └─▶ src/automation    observed through Qt signals
+
+src/services        business rules: scenarios, keywords, target sites, browser and
+  │                   proxy profiles, safety, Google research, reports, dashboard,
+  │                   backup, settings, demo
+  ├─▶ src/database      models, repositories, Alembic
+  ├─▶ src/networking    OS credential store, proxy connection test
+  └─▶ src/domain        enums, exceptions, validation schemas (depends on nothing)
+
+src/automation        session runner, state machine, engine interface, Playwright
+  │                   engine, run service, rank observer
+  ├─▶ src/search_providers   Google Custom Search JSON API - the real ranking data
+  └─▶ src/local_servers      the bundled sample website: a page to visit, never a
+                             search source
 ```
 
 Allowed dependency direction is **downwards only**. `src/domain` imports nothing from the project;
 `src/database` imports only `domain`; services import database, domain, networking; automation imports
-services and domain; `ui` imports everything below it. `src/app` is the *composition root*: the only
-place that knows every concrete class.
+services, domain and the search provider; `search_providers` imports domain only and talks to the outside
+world. No package below `ui` opens a browser: search data arrives as API results, and the browser is
+driven exclusively by `src/automation`. `src/app` is the *composition root*: the only place that knows
+every concrete class.
 
 | Package | Responsibility |
 | --- | --- |
@@ -38,8 +38,9 @@ place that knows every concrete class.
 | `domain/` | Enums, exception hierarchy, Pydantic input schemas |
 | `database/` | Engine and sessions, ORM models, repositories, Alembic runner |
 | `services/` | All business rules (see below) |
-| `automation/` | Browser automation: engine interface, state machine, runner, run service |
-| `local_servers/` | FastAPI search simulator and sample website, `LocalServerManager` |
+| `automation/` | Browser automation: engine interface, state machine, runner, run service, rank observer |
+| `local_servers/` | Bundled sample website and `LocalServerManager` - a page to visit, never a search source |
+| `search_providers/` | The real search data: `SearchProvider` protocol, the Google Custom Search JSON API client, domain matching |
 | `networking/` | Credential store (OS keyring), proxy connection tester |
 | `reports/` | CSV / Excel / JSON exporters |
 | `logging_config/` | structlog setup, rotating JSON file, in-memory buffer for the GUI |
@@ -61,7 +62,7 @@ service and the run service, and returns an `AppContainer`. Nothing uses module-
 | --- | --- | --- |
 | GUI (main) | Qt event loop, all widgets | - |
 | Automation worker | one `asyncio` loop per run: Playwright, state machine, dwell clock | `RunObserver` → `QtRunObserver` signals |
-| Server threads | uvicorn for the simulator and the sample site | - |
+| Server threads | uvicorn for the bundled sample website | the search API needs no server of its own |
 | Qt thread pool | report generation, exports, backups, proxy tests | `TaskRunner` signals |
 
 The automation thread never touches a widget. It calls `RunObserver` methods; `QtRunObserver` turns
@@ -73,10 +74,12 @@ through a small thread-safe `RunControl` object that the worker polls at safe bo
 ## The automation core
 
 See [AUTOMATION_ENGINE.md](AUTOMATION_ENGINE.md). In short: `SessionRunner` drives one session through
-a validated state machine against the abstract `AutomationEngine`. The Playwright implementation is
-assembled from single-purpose services (browser manager, search actions, target actions, interaction
-service, screenshot service). Everything the browser may reach is decided by the central
-`DomainSafetyService` ([SAFETY.md](SAFETY.md)).
+a validated state machine against the abstract `AutomationEngine`. Each iteration first asks a
+`RankObserver` where the target site ranks — that answer comes from `src/search_providers`, never from a
+page — and the browser is then started only to visit the approved site. The Playwright implementation is
+assembled from single-purpose services (browser manager, target actions, interaction service, screenshot
+service). Everything the browser may reach is decided by the central `DomainSafetyService`
+([SAFETY.md](SAFETY.md)).
 
 ## Error handling
 
@@ -95,8 +98,8 @@ Details in [DATABASE.md](DATABASE.md).
 
 Two levels, on purpose:
 
-- **Start-up configuration** (`.env`, environment): data/database/log/screenshot locations, the two
-  ports, log level. Needed before the database exists.
+- **Start-up configuration** (`.env`, environment): data/database/log/screenshot locations, the port of
+  the bundled sample website, log level. Needed before the database exists.
 - **User settings** (database, `application_settings`): theme, automation defaults, screenshot policy,
   first-run flag. Included in configuration export.
 
@@ -111,6 +114,8 @@ Two levels, on purpose:
 | Live view = periodic screenshots | Playwright cannot drive a `QWebEngineView`; screenshots work for headless profiles too |
 | Painter-based charts | Full control over mark specs and theming, no extra chart dependency |
 | Secrets only in the OS credential store | Never in the database, logs, snapshots or exports |
+| Search data from the provider API, not from the browser | Google's terms forbid scraping, and a scraped results page is not reproducible data; the official API is documented, keyed and quota-metered, so the same query can be audited later |
+| A local target skips the ranking step | The bundled sample site and private development hosts are not in Google's index; asking would only waste quota, and inventing a position would corrupt the record |
 
 ## Directory map
 
@@ -121,7 +126,8 @@ src/domain/            enums, exceptions, schemas
 src/database/          base, session, migrator, models/, repositories/
 src/services/          business rules
 src/automation/        engine, state machine, runner, Playwright services
-src/local_servers/     search_simulator/, target_site/, server_manager
+src/local_servers/     target_site/, server_manager
+src/search_providers/  base.py (protocol), google_cse.py (the real data), matching.py
 src/networking/        credentials, proxy_manager
 src/reports/           csv / excel / json exporters
 src/logging_config/    structured logging

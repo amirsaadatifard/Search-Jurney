@@ -1,10 +1,10 @@
 """Runs scenarios on a background thread and exposes pause / resume / stop.
 
-The GUI calls :meth:`start` and returns immediately; everything slow (browser,
-network, dwelling) happens on a worker thread with its own asyncio loop, so the
-interface never freezes. Only one run may be active (the configured maximum of
-concurrent sessions is 1); the design keeps run state in this object so a pool
-could replace it later.
+The GUI calls :meth:`start` and returns immediately; everything slow (the
+search-API query, the browser, dwelling) happens on a worker thread with its own
+asyncio loop, so the interface never freezes. Only one run may be active (the
+configured maximum of concurrent sessions is 1); the design keeps run state in
+this object so a pool could replace it later.
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ from typing import Final
 
 from src.app.paths import AppPaths
 from src.automation.control import RunControl
-from src.automation.models import RunSummary, SessionPlan
+from src.automation.models import MODE_GOOGLE, RunSummary, SessionPlan
 from src.automation.observer import RunObserver, SafeObserver
 from src.automation.plan_factory import PlanFactory
 from src.automation.playwright_engine import PlaywrightEngine
+from src.automation.rank_observer import RankObserver
 from src.automation.recorder import SessionRecorder
 from src.automation.screenshot_service import ScreenshotService
 from src.automation.session_runner import SessionRunner
 from src.database.session import Database
 from src.domain.exceptions import AutomationError, InvalidConfigurationError
-from src.local_servers.search_simulator.state import SimulatorConfig
 from src.local_servers.server_manager import LocalServerManager
 from src.logging_config import get_logger
 from src.networking.credentials import CredentialStore
@@ -50,13 +50,15 @@ class AutomationRunService:
         servers: LocalServerManager,
         scenarios: ScenarioService,
         credentials: CredentialStore,
+        rank_observer: RankObserver | None = None,
     ) -> None:
         self._safety = safety
         self._paths = paths
         self._servers = servers
         self._scenarios = scenarios
         self._recorder = SessionRecorder(database)
-        self._plans = PlanFactory(settings, f"{servers.search.url}/", credentials)
+        self._rank_observer = rank_observer
+        self._plans = PlanFactory(settings, credentials)
         self._thread: threading.Thread | None = None
         self._control = RunControl()
         self._guard = threading.Lock()
@@ -91,12 +93,40 @@ class AutomationRunService:
         """Start a run in the background. Raises if one is already active."""
         self.start_plans(self.build_plans(scenario_ids, iterations_override), observer)
 
+    def _needs_sample_site(self, plan: SessionPlan) -> bool:
+        """Whether a journey loads the bundled sample website (the only local server).
+
+        Decided by where the visit goes, not by how the ranking was obtained: a
+        site registered on this machine - the demo, or a development server the
+        user approved under another environment - has to be serving before the
+        browser is pointed at it. A journey against a real domain needs no local
+        server at all and must not be the reason a port gets bound.
+        """
+        return plan.target_url.startswith(f"{self._servers.target.url}/")
+
+    def _check_search_source(self, plans: Sequence[SessionPlan]) -> None:
+        """Refuse a run whose journeys need real search data the app cannot obtain.
+
+        Failing here costs nothing; failing inside the first iteration leaves a
+        half-recorded session and a much less helpful message.
+        """
+        if not any(plan.mode == MODE_GOOGLE for plan in plans):
+            return
+        if self._rank_observer is not None and self._rank_observer.credentials_ready:
+            return
+        raise InvalidConfigurationError(
+            "These journeys read the real Google ranking first, which needs an API key and a "
+            "search engine id. Enter them under Google Research (or set SJAT_GOOGLE_API_KEY and "
+            "SJAT_GOOGLE_ENGINE_ID) and start the run again."
+        )
+
     def start_plans(self, plans: list[SessionPlan], observer: RunObserver | None = None) -> None:
         """Start a run from ready-made plans (used by Google Research mode)."""
         with self._guard:
             if self.is_running:
                 raise AutomationError("A run is already in progress.")
-            if any(plan.mode == "lab" for plan in plans):  # direct visits need no local servers
+            self._check_search_source(plans)
+            if any(self._needs_sample_site(plan) for plan in plans):
                 errors = self._servers.start_all()
                 if errors:
                     raise AutomationError(" ".join(errors))
@@ -166,7 +196,7 @@ class AutomationRunService:
                 self._safety,
                 control,
                 observer,
-                configure_search=self._configure_search,
+                rank_observer=self._rank_observer,
             )
             part = await runner.run_plan(plan, run_id)
             total.completed += part.completed
@@ -174,9 +204,3 @@ class AutomationRunService:
             total.failed += part.failed
             total.stopped += part.stopped
         return total
-
-    def _configure_search(self, plan: SessionPlan) -> None:
-        """Make the simulator list this plan's target at the scenario's rank."""
-        self._servers.configure_search(
-            SimulatorConfig(target_url=plan.target_url, position=plan.simulated_position)
-        )

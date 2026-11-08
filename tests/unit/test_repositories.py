@@ -171,7 +171,7 @@ def test_scenario_relationships_are_usable_after_session_closes(database: Databa
         {"min_dwell_seconds": 20, "max_dwell_seconds": 10},
         {"iterations": 0},
         {"min_dwell_seconds": -1},
-        {"simulated_position": 11},
+        {"max_scroll_actions": -1},
         {"delay_between_iterations": -5},
     ],
 )

@@ -95,8 +95,7 @@ class StartupHealthService:
             self._check_database,
             self._check_playwright,
             self._check_web_engine,
-            lambda: self._check_port("Search simulator port", self._config.search_port),
-            lambda: self._check_port("Test site port", self._config.target_port),
+            lambda: self._check_port("Sample site port", self._config.target_port),
         )
         results = tuple(self._safely(check) for check in checks)
         report = HealthReport(results)

@@ -4,6 +4,13 @@ The happy path is a straight line; ``DWELLING`` and ``INTERACTING`` alternate;
 any active state may fail, be stopped or be paused. Pausing remembers the state
 it interrupted and resuming returns exactly there.
 
+Two shapes exist because the search is no longer browsed. A normal journey asks
+the search provider first (``SEARCHING`` -> ``ANALYZING_RESULTS``) and only then
+starts a browser, so a site that is not ranked costs no page load. A direct
+visit (Google Research mode, or a local site Google cannot list) opens the
+target without a search state. ``OPENING_SEARCH`` and ``ENTERING_KEYWORD``
+remain in the enum for sessions recorded by earlier versions.
+
 The machine only validates and records transitions. Persisting them and
 notifying the GUI is done by the ``on_change`` callback.
 """
@@ -22,14 +29,16 @@ TERMINAL_STATES: Final = frozenset({S.COMPLETED, S.FAILED, S.STOPPED})
 
 _FORWARD: Final[dict[S, frozenset[S]]] = {
     S.IDLE: frozenset({S.INITIALIZING}),
-    S.INITIALIZING: frozenset({S.STARTING_BROWSER}),
+    # A journey either asks the search provider first or goes straight to the browser.
+    S.INITIALIZING: frozenset({S.STARTING_BROWSER, S.SEARCHING}),
     # TARGET_FOUND is the shortcut of direct-visit sessions: the target was already observed.
-    S.STARTING_BROWSER: frozenset({S.OPENING_SEARCH, S.TARGET_FOUND}),
+    S.STARTING_BROWSER: frozenset({S.OPENING_SEARCH, S.TARGET_FOUND, S.OPENING_TARGET}),
     S.OPENING_SEARCH: frozenset({S.ENTERING_KEYWORD}),
     S.ENTERING_KEYWORD: frozenset({S.SEARCHING}),
     S.SEARCHING: frozenset({S.ANALYZING_RESULTS}),
     S.ANALYZING_RESULTS: frozenset({S.TARGET_FOUND, S.TARGET_NOT_FOUND}),
-    S.TARGET_FOUND: frozenset({S.OPENING_TARGET}),
+    # The provider already found the target; the browser starts after that check.
+    S.TARGET_FOUND: frozenset({S.OPENING_TARGET, S.STARTING_BROWSER}),
     S.TARGET_NOT_FOUND: frozenset({S.CAPTURING_RESULT}),
     S.OPENING_TARGET: frozenset({S.DWELLING}),
     S.DWELLING: frozenset({S.INTERACTING, S.CAPTURING_RESULT}),

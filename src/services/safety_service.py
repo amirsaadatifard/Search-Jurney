@@ -6,8 +6,9 @@ Every URL the automation is about to touch goes through
 1. The URL must be well formed, use ``http``/``https`` and carry no credentials.
 2. Public search engines are refused unconditionally, even if someone managed
    to put one on the allowlist.
-3. The origin must be on the allowlist: an enabled *and* approved target site,
-   or one of the application's own local servers.
+3. The origin must be on the allowlist: an enabled *and* approved target site.
+   Search engines are refused before this check, so adding one to the allowlist
+   by hand still does not let automation browse it.
 
 The service is pure logic. The allowlist arrives through a callable and DNS
 through an injectable resolver, so every rule is unit-testable offline.
@@ -242,17 +243,20 @@ class DomainSafetyService:
     def __init__(
         self,
         allowlist_provider: Callable[[], Iterable[AllowedOrigin]],
-        internal_origins: Iterable[AllowedOrigin] = (),
         resolver: HostResolver = system_resolver,
     ) -> None:
         self._allowlist_provider = allowlist_provider
-        self._internal_origins = tuple(internal_origins)
         self._resolver = resolver
 
     # -- queries ---------------------------------------------------------------- #
     def allowed_origins(self) -> tuple[AllowedOrigin, ...]:
-        """Current allowlist: the app's own servers plus approved target sites."""
-        return (*self._internal_origins, *self._allowlist_provider())
+        """The approved target sites, read again on every call.
+
+        There is no exempt origin: not the search provider (which is an API, not a
+        page) and not the bundled sample website, which is on this list only
+        because the user approved it like any other site.
+        """
+        return tuple(self._allowlist_provider())
 
     def classify_host(self, host: str) -> HostKind:
         """Classify a host name or IP literal, resolving names when necessary.
@@ -334,8 +338,9 @@ class DomainSafetyService:
         if is_public_search_engine(url.host):
             log.warning("safety_blocked", url=url.origin, reason=Reason.PUBLIC_SEARCH_ENGINE)
             raise SafetyViolationError(
-                f"'{url.host}' is a public search engine. This tool only works with the "
-                "local search simulator and test sites you control.",
+                f"'{url.host}' is a public search engine. Rankings are read through the "
+                "official search API and only sites you control are opened; a search engine "
+                "is never browsed.",
                 reason=Reason.PUBLIC_SEARCH_ENGINE,
                 url=url.url,
             )

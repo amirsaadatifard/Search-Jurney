@@ -19,13 +19,19 @@ class Environment(StrEnum):
 
 
 class SearchProfile(StrEnum):
-    """Search environment a scenario runs against.
+    """Where a scenario's ranking data comes from.
 
-    Only the bundled simulator exists; the enum is the extension point for
-    other *controlled* search pages (e.g. a staging site's internal search).
+    ``GOOGLE`` is the real search engine, read through Google's official
+    Custom Search JSON API. No scenario browses or clicks inside a search
+    engine; the API is the only search source, which is what keeps the safety
+    rules ("never touch a public search engine") intact.
+
+    A target Google can never list (the bundled loopback sample site) is
+    visited directly and no ranking is claimed for it — see
+    :meth:`src.automation.plan_factory.PlanFactory.from_scenario`.
     """
 
-    LOCAL_SIMULATOR = "LOCAL_SIMULATOR"
+    GOOGLE = "GOOGLE"
 
 
 class ProxyProtocol(StrEnum):

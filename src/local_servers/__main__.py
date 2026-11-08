@@ -1,7 +1,7 @@
-"""Run only the local test servers: ``python -m src.local_servers``.
+"""Run only the bundled sample website: ``python -m src.local_servers``.
 
-Handy for looking at the simulator and the sample site in a normal browser.
-The same safety rules apply as inside the application.
+Handy for looking at the sample site in a normal browser. The same safety
+rules apply as inside the application.
 """
 
 from __future__ import annotations

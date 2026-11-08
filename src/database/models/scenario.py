@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 class Scenario(TimestampMixin, Base):
     """What to search for, which approved site to open and how to behave there.
 
-    ``simulated_position`` tells the local search simulator where to rank the
-    target (1-10). ``None`` omits the target from the results, which exercises
-    the *target not found* path.
+    The ranking a journey starts from is *observed*, never configured:
+    :attr:`search_profile` names the real search provider that answers for the
+    :attr:`keyword`, and the position found there is stored on the session.
     """
 
     __tablename__ = "scenarios"
@@ -33,10 +33,6 @@ class Scenario(TimestampMixin, Base):
         CheckConstraint("iterations > 0", name="iterations_positive"),
         CheckConstraint("delay_between_iterations >= 0", name="delay_non_negative"),
         CheckConstraint("max_scroll_actions >= 0", name="scroll_actions_non_negative"),
-        CheckConstraint(
-            "simulated_position IS NULL OR simulated_position BETWEEN 1 AND 10",
-            name="simulated_position_range",
-        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -54,11 +50,8 @@ class Scenario(TimestampMixin, Base):
         ForeignKey("proxy_profiles.id", ondelete="SET NULL"), index=True
     )
     search_profile: Mapped[SearchProfile] = mapped_column(
-        enum_type(SearchProfile), default=SearchProfile.LOCAL_SIMULATOR, nullable=False
+        enum_type(SearchProfile), default=SearchProfile.GOOGLE, nullable=False
     )
-    # No column default: SQLAlchemy would apply it to an explicit None, turning
-    # "not listed" into a position. The default (3) lives in ScenarioInput.
-    simulated_position: Mapped[int | None] = mapped_column(Integer)
 
     min_dwell_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     max_dwell_seconds: Mapped[int] = mapped_column(Integer, nullable=False)

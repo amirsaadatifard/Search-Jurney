@@ -31,7 +31,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--demo",
         action="store_true",
-        help="start the demo right away: run one safe search journey on the local test servers",
+        help="start the demo right away: run one safe journey against the bundled sample website",
     )
     developer = parser.add_argument_group("developer options")
     developer.add_argument(
@@ -68,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         theme = ThemeManager(app, ThemeMode(args.theme) if args.theme else saved_mode)
 
         server_errors = container.servers.start_all()
-        # Re-run so the port checks reflect that the servers are now ours.
+        # Re-run so the port check reflects that the sample site's port is now ours.
         container.health_report = container.health_service.run()
 
         window = MainWindow(container, theme)

@@ -1,23 +1,34 @@
-"""Dialog for creating/editing a scenario."""
+"""Dialog for creating/editing a scenario.
+
+The search source is not a choice any more — every scenario reads its ranking
+from the real Google results, so the form configures the keyword, the approved
+site to open and the behaviour on that page only.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QPlainTextEdit, QSpinBox, QWidget
-
-from src.app.constants import (
-    MAX_RESULT_POSITION,
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QSpinBox,
+    QWidget,
 )
+
 from src.database.models import Scenario
-from src.domain.enums import SearchProfile
 from src.services.scenario_service import ScenarioFormOptions
 from src.ui.widgets.form_dialog import FormDialog, Submit, make_combo
 
-SEARCH_PROFILE_LABELS: dict[SearchProfile, str] = {
-    SearchProfile.LOCAL_SIMULATOR: "Local search simulator",
-}
-NOT_LISTED_LABEL = "Not listed (tests the target-not-found path)"
+
+def _read_only(text: str) -> QLabel:
+    """A fact the form reports but does not let the user change."""
+    label = QLabel(text)
+    label.setObjectName("FieldHint")
+    return label
 
 
 def _spin(minimum: int, maximum: int, value: int, suffix: str = "") -> QSpinBox:
@@ -68,15 +79,6 @@ class ScenarioDialog(FormDialog):
                 for site in options.target_sites
             ],
             s.target_site_id if s else None,
-        )
-        self.search_profile_input = make_combo(
-            [(label, profile) for profile, label in SEARCH_PROFILE_LABELS.items()],
-            s.search_profile if s else SearchProfile.LOCAL_SIMULATOR,
-        )
-        self.position_input = make_combo(
-            [(f"Position {n}", n) for n in range(1, MAX_RESULT_POSITION + 1)]
-            + [(NOT_LISTED_LABEL, None)],
-            s.simulated_position if s else 3,
         )
 
         # Timing -----------------------------------------------------------------------
@@ -134,11 +136,12 @@ class ScenarioDialog(FormDialog):
             self.target_input,
             "Only enabled, approved sites can be used.",
         )
-        self.add_row(
-            [
-                ("search_profile", "Search environment", self.search_profile_input),
-                ("simulated_position", "Target position in results", self.position_input),
-            ]
+        self.add_field(
+            "search_source",
+            "Search source",
+            _read_only("Google (official search API)"),
+            "Before each iteration the real ranking of this site is read for the keyword; "
+            "the iteration then opens the site directly. Nothing is typed into google.com.",
         )
 
         self.add_section("Timing")
@@ -178,8 +181,6 @@ class ScenarioDialog(FormDialog):
             "description": self.description_input.toPlainText(),
             "keyword": self.keyword_input.currentText(),
             "target_site_id": self.target_input.currentData(),
-            "search_profile": self.search_profile_input.currentData(),
-            "simulated_position": self.position_input.currentData(),
             "min_dwell_seconds": self.min_dwell_input.value(),
             "max_dwell_seconds": self.max_dwell_input.value(),
             "iterations": self.iterations_input.value(),

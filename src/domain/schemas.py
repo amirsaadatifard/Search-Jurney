@@ -23,7 +23,6 @@ from pydantic import (
     field_validator,
 )
 
-from src.app.constants import MAX_RESULT_POSITION
 from src.domain.enums import Environment, ProxyProtocol, SearchProfile, UserAgentMode
 from src.domain.exceptions import InvalidConfigurationError
 
@@ -186,8 +185,7 @@ class ScenarioInput(_Schema):
     target_site_id: int = Field(gt=0)
     browser_profile_id: int = Field(gt=0)
     proxy_profile_id: int | None = Field(default=None, gt=0)
-    search_profile: SearchProfile = SearchProfile.LOCAL_SIMULATOR
-    simulated_position: int | None = Field(default=3, ge=1, le=MAX_RESULT_POSITION)
+    search_profile: SearchProfile = SearchProfile.GOOGLE
     min_dwell_seconds: int = Field(ge=1, le=MAX_DWELL_SECONDS)
     max_dwell_seconds: int = Field(ge=1, le=MAX_DWELL_SECONDS)
     iterations: int = Field(1, ge=1, le=MAX_ITERATIONS)

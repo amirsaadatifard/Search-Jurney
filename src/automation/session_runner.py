@@ -3,6 +3,11 @@
 The runner is written against :class:`AutomationEngine` and owns everything
 that is not browser-specific: ordering (state machine), the event timeline,
 the pausable dwell clock, stop handling, error classification and persistence.
+
+Each iteration starts by asking the search provider where the target site ranks
+(:class:`~src.automation.rank_observer.RankObserver`). The browser is only
+started for a target the real results actually list, so the runner never
+browses a search engine and a site that is not ranked loads no page.
 """
 
 from __future__ import annotations
@@ -23,18 +28,21 @@ from src.automation.interaction_service import (
     choose_dwell,
 )
 from src.automation.models import (
-    ResultItem,
+    MODE_DIRECT,
+    RankObservation,
     RunSummary,
     SessionPlan,
     SessionResult,
 )
 from src.automation.observer import RunObserver, SafeObserver
+from src.automation.rank_observer import RankObserver
 from src.automation.recorder import SessionRecorder
 from src.automation.state_machine import SessionStateMachine
 from src.domain.enums import EventType, ScreenshotKind, SessionState, SessionStatus
 from src.domain.exceptions import (
     AppError,
     BrowserLaunchError,
+    InvalidConfigurationError,
     SafetyViolationError,
     SessionCancelledError,
 )
@@ -47,7 +55,7 @@ DWELL_TICK_SECONDS: Final = 0.25
 PREVIEW_EVERY_TICKS: Final = 4  # about one frame per second while dwelling
 PREVIEW_STATES: Final = frozenset(
     {
-        SessionState.ENTERING_KEYWORD,
+        SessionState.SEARCHING,
         SessionState.ANALYZING_RESULTS,
         SessionState.DWELLING,
         SessionState.INTERACTING,
@@ -55,10 +63,10 @@ PREVIEW_STATES: Final = frozenset(
     }
 )
 SEED_BITS: Final = 32
+SNAPSHOT_RESULT_LIMIT: Final = 10  # results copied into the session's audit snapshot
 
 SeedSource = Callable[[], int]
 EngineFactory = Callable[[SessionPlan], AutomationEngine]
-SearchConfigurator = Callable[[SessionPlan], None]
 
 
 def random_seed() -> int:
@@ -81,6 +89,7 @@ class _Tracker:
         self.machine = machine
         self.target_found: bool | None = None
         self.target_position: int | None = None
+        self.observed: RankObservation | None = None
         self.planned_dwell: float | None = None
         self.actual_dwell: float | None = None
         self.scroll_actions = 0
@@ -96,7 +105,7 @@ class SessionRunner:
         safety: DomainSafetyService,
         control: RunControl,
         observer: RunObserver | None = None,
-        configure_search: SearchConfigurator | None = None,
+        rank_observer: RankObserver | None = None,
         seed_source: SeedSource = random_seed,
     ) -> None:
         self._engine = engine
@@ -104,7 +113,7 @@ class SessionRunner:
         self._safety = safety
         self._control = control
         self._observer = SafeObserver(observer)
-        self._configure_search = configure_search
+        self._rank_observer = rank_observer
         self._seed_source = seed_source
 
     # -- one scenario ------------------------------------------------------------- #
@@ -165,20 +174,73 @@ class SessionRunner:
         return self._finish(tracker, iteration, status, error)
 
     async def _execute(self, t: _Tracker) -> None:
-        plan, engine = t.plan, self._engine
-
+        plan = t.plan
         await self._go(t, SessionState.INITIALIZING, "Checking safety rules")
         self._event(
             t, EventType.SESSION_STARTED, f"keyword '{plan.keyword}' on {plan.target_domain}"
         )
         self._safety.check_url(plan.target_url)
-        if plan.mode == "direct":
+        if plan.mode == MODE_DIRECT:
             await self._execute_direct(t)
             return
-        self._safety.check_url(plan.search_url)
-        if self._configure_search is not None:
-            self._configure_search(plan)
 
+        await self._observe_rank(t)
+        if t.target_found is False:
+            await self._target_not_found(t)
+            return
+        await self._open_observed_target(t)
+
+    async def _observe_rank(self, t: _Tracker) -> None:
+        """Ask the search provider where the target ranks; no browser is involved yet."""
+        plan = t.plan
+        if self._rank_observer is None:
+            raise InvalidConfigurationError(
+                "No search provider is configured, so the real ranking cannot be read. "
+                "Set the Google API key and search engine id under Google Research."
+            )
+        await self._go(
+            t, SessionState.SEARCHING, f"Reading the Google results for '{plan.keyword}'"
+        )
+        observed = await self._rank_observer.observe(plan)
+        t.observed = observed
+        self._recorder.update(
+            t.session_id,
+            results_count=observed.result_count,
+            observation_id=observed.observation_id,
+        )
+        self._recorder.merge_snapshot(
+            t.session_id,
+            {
+                "observed_provider": observed.provider,
+                "observed_result_count": observed.result_count,
+                # The first page only; the complete list lives in the observation.
+                "observed_results": [
+                    {"position": item.position, "title": item.title, "url": item.url}
+                    for item in observed.results[:SNAPSHOT_RESULT_LIMIT]
+                ],
+            },
+        )
+        await self._go(t, SessionState.ANALYZING_RESULTS, "Looking for the target site")
+        found = observed.position is not None
+        t.target_found, t.target_position = found, observed.position
+        self._recorder.update(t.session_id, target_found=found, target_position=observed.position)
+        self._observer.on_target_position(observed.position)
+        where = f"at position {observed.position}" if found else "is not in the results"
+        self._event(
+            t,
+            EventType.SEARCH_OBSERVED,
+            f"{observed.provider}: '{plan.keyword}' on {plan.target_domain} {where}",
+            {
+                "provider": observed.provider,
+                "observation_id": observed.observation_id,
+                "position": observed.position,
+                "result_count": observed.result_count,
+            },
+        )
+
+    async def _start_browser(self, t: _Tracker) -> None:
+        """Open the isolated context the target visit runs in."""
+        engine, plan = self._engine, t.plan
         await self._go(t, SessionState.STARTING_BROWSER, "Starting the browser")
         info = await engine.start_session(plan)
         self._recorder.update(t.session_id, browser_info=info)
@@ -189,42 +251,65 @@ class SessionRunner:
         )
         self._event(t, EventType.BROWSER_STARTED, f"Chromium {info.get('version', '')}{note}", info)
 
-        await self._go(t, SessionState.OPENING_SEARCH, "Opening the search page")
-        url = await engine.navigate(plan.search_url)
-        self._page(url)
-        self._event(t, EventType.SEARCH_PAGE_OPENED, url)
-
-        await self._go(t, SessionState.ENTERING_KEYWORD, f"Typing '{plan.keyword}'")
-        await engine.fill_search(plan.keyword)
-        self._event(t, EventType.KEYWORD_ENTERED, plan.keyword)
-
-        await self._go(t, SessionState.SEARCHING, "Submitting the search")
-        await engine.submit_search()
-        self._page(engine.current_url)
-        self._event(t, EventType.SEARCH_SUBMITTED, engine.current_url)
-
-        await self._go(t, SessionState.ANALYZING_RESULTS, "Reading the results")
-        results = await engine.get_results()
-        self._recorder.update(t.session_id, results_count=len(results))
-        self._event(
-            t, EventType.RESULTS_RECEIVED, f"{len(results)} results", {"count": len(results)}
+    async def _open_observed_target(self, t: _Tracker) -> None:
+        """Open the page the provider listed for the target site."""
+        observed = t.observed
+        assert observed is not None  # set by _observe_rank before this step
+        await self._go(
+            t,
+            SessionState.TARGET_FOUND,
+            f"Listed at position {observed.position}",
         )
-        await self._screenshot(t, ScreenshotKind.SEARCH_RESULTS)
+        self._event(
+            t,
+            EventType.TARGET_FOUND,
+            f"position={observed.position}",
+            {"position": observed.position},
+        )
+        await self._start_browser(t)
+        await self._open_target(t, self._visit_url(t, observed))
 
-        item = engine.find_target(results, plan.target_url)
-        if item is None:
-            await self._target_not_found(t)
-            return
-        await self._open_and_dwell(t, item)
+    def _visit_url(self, t: _Tracker, observed: RankObservation) -> str:
+        """The URL to open: the exact page Google listed, if it is approved to be visited.
+
+        Google may rank a page on a host the allowlist does not cover (a
+        subdomain of the approved site, another port). Those pages stay
+        unreachable; the journey then uses the approved site's own address and
+        says so on the timeline.
+        """
+        plan = t.plan
+        candidate = observed.target_url
+        if not candidate or candidate == plan.target_url:
+            return plan.target_url
+        if self._safety.is_allowed(candidate):
+            return candidate
+        self._event(
+            t,
+            EventType.SAFETY_BLOCKED,
+            f"{candidate} is outside the approved scope; opening {plan.target_url} instead",
+            {"blocked_url": candidate, "used_url": plan.target_url},
+        )
+        return plan.target_url
+
+    async def _open_target(self, t: _Tracker, url: str) -> None:
+        """Go to the target page, dwell on it and record the outcome."""
+        engine = self._engine
+        await self._go(t, SessionState.OPENING_TARGET, "Opening the target")
+        opened = await engine.open_url(url)
+        self._page(opened)
+        self._event(t, EventType.TARGET_OPENED, opened)
+        await self._screenshot(t, ScreenshotKind.TARGET_OPENED)
+        await self._finish_visit(t)
 
     async def _execute_direct(self, t: _Tracker) -> None:
-        """Google Research mode: the target was observed by a real search; open it directly."""
-        plan, engine = t.plan, self._engine
-        await self._go(t, SessionState.STARTING_BROWSER, "Starting the browser")
-        info = await engine.start_session(plan)
-        self._recorder.update(t.session_id, browser_info=info)
-        self._event(t, EventType.BROWSER_STARTED, f"Chromium {info.get('version', '')}", info)
+        """Open the target without a search step.
 
+        Used by Google Research visits (a search was already observed and its
+        position belongs to that record) and by journeys whose target Google can
+        never list, such as the bundled local sample site. In the second case no
+        ranking is claimed: the session records the visit only.
+        """
+        plan = t.plan
         position = plan.observed_position
         t.target_found, t.target_position = True, position
         self._recorder.update(
@@ -233,28 +318,35 @@ class SessionRunner:
             target_position=position,
             results_count=plan.observed_result_count,
         )
-        self._observer.on_target_position(position)
-        self._event(
+        if position is not None:
+            # "no position" here means "Google was never asked", not "not listed", so the
+            # live view keeps its placeholder instead of claiming the site is absent.
+            self._observer.on_target_position(position)
+        if plan.provider:
+            self._event(
+                t,
+                EventType.SEARCH_OBSERVED,
+                f"{plan.provider}: '{plan.keyword}' -> {plan.target_domain} at position {position}",
+                {
+                    "provider": plan.provider,
+                    "observation_id": plan.observation_id,
+                    "position": position,
+                },
+            )
+        await self._go(
             t,
-            EventType.SEARCH_OBSERVED,
-            f"{plan.provider}: '{plan.keyword}' -> {plan.target_domain} at position {position}",
-            {
-                "provider": plan.provider,
-                "observation_id": plan.observation_id,
-                "position": position,
-            },
+            SessionState.TARGET_FOUND,
+            f"Observed at position {position}" if position is not None else "Direct visit",
         )
-        await self._go(t, SessionState.TARGET_FOUND, f"Observed at position {position}")
         self._event(t, EventType.TARGET_FOUND, f"position={position}", {"position": position})
-
-        await self._go(t, SessionState.OPENING_TARGET, "Opening the target directly")
-        url = await engine.open_url(plan.target_url)
-        self._page(url)
-        self._event(t, EventType.TARGET_OPENED, url)
-        await self._screenshot(t, ScreenshotKind.TARGET_OPENED)
-        await self._finish_visit(t)
+        await self._start_browser(t)
+        await self._open_target(t, plan.target_url)
 
     async def _target_not_found(self, t: _Tracker) -> None:
+        """The provider's real results did not contain the target: a finding, not a failure.
+
+        No browser was started, so this branch records the outcome and ends.
+        """
         await self._go(t, SessionState.TARGET_NOT_FOUND, f"{t.plan.target_domain} is not listed")
         t.target_found = False
         self._observer.on_target_position(None)
@@ -264,23 +356,6 @@ class SessionRunner:
         await self._screenshot(t, ScreenshotKind.SESSION_END)
         await self._go(t, SessionState.COMPLETED, "Target not found")
         self._event(t, EventType.SESSION_COMPLETED, "Completed: target not found")
-
-    async def _open_and_dwell(self, t: _Tracker, item: ResultItem) -> None:
-        engine = self._engine
-        await self._go(t, SessionState.TARGET_FOUND, f"Target found at position {item.position}")
-        t.target_found, t.target_position = True, item.position
-        self._observer.on_target_position(item.position)
-        self._recorder.update(t.session_id, target_found=True, target_position=item.position)
-        self._event(
-            t, EventType.TARGET_FOUND, f"position={item.position}", {"position": item.position}
-        )
-
-        await self._go(t, SessionState.OPENING_TARGET, "Opening the target")
-        url = await engine.open_target(item)
-        self._page(url)
-        self._event(t, EventType.TARGET_OPENED, url)
-        await self._screenshot(t, ScreenshotKind.TARGET_OPENED)
-        await self._finish_visit(t)
 
     async def _finish_visit(self, t: _Tracker) -> None:
         """Dwell on the opened page, capture the result and complete the session."""
@@ -419,6 +494,13 @@ class SessionRunner:
             self._observer.on_page_changed(url)
 
     async def _screenshot(self, t: _Tracker, kind: ScreenshotKind) -> None:
+        """Capture the page the session is on, if a page is open at all.
+
+        A journey that the search results stopped short of the browser has no
+        page to photograph; its evidence is the stored observation instead.
+        """
+        if not self._engine.is_open:
+            return
         info = await self._engine.capture_screenshot(kind, t.session_id, t.plan.keyword)
         if info is not None:
             self._event(t, EventType.SCREENSHOT_CAPTURED, f"{kind.value}: {info['file']}", info)

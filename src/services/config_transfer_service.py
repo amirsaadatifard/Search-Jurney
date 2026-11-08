@@ -56,6 +56,9 @@ SECTIONS: Final = (
     "scenarios",
 )
 THEMES: Final = frozenset({"light", "dark", "system"})
+# ``search_results`` is accepted so a configuration exported before the search API
+# replaced the local simulator still imports; nothing writes it any more (see
+# ``AutomationDefaults``).
 POLICY_KEYS: Final = ("search_results", "target_opened", "session_end", "error")
 _REFERENCE_FIELDS: Final = {
     "target_site": "target_site_id",

@@ -164,7 +164,7 @@ class AboutPage(BasePage):
         self._summary.setText(report.summary())
 
     def show_servers(self) -> None:
-        """Render the current state of the search simulator and the sample site."""
+        """Render the current state of the bundled sample website."""
         _clear_grid(self._servers_grid)
         servers = self.context.container.servers
         for row, status in enumerate(servers.statuses()):

@@ -82,10 +82,6 @@ class NavigationError(AutomationError):
     """A page failed to load."""
 
 
-class SearchError(AutomationError):
-    """The search page could not be used (missing input, no results container)."""
-
-
 class TargetNotFoundError(AutomationError):
     """The target domain is not present in the search results."""
 

@@ -23,7 +23,6 @@ EDITABLE_KEYS: Final = frozenset(
         "DATABASE_FILE",
         "LOGS_DIR",
         "SCREENSHOTS_DIR",
-        "SEARCH_PORT",
         "TARGET_PORT",
         "LOG_LEVEL",
     )

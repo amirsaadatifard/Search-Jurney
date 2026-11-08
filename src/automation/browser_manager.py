@@ -105,9 +105,7 @@ class BrowserManager:
             self._fence_active = False  # one proxy setting cannot serve both purposes
         else:
             origins = [
-                AllowedOrigin.from_url(normalize_url(url))
-                for url in (plan.search_url, plan.target_url)
-                if url
+                AllowedOrigin.from_url(normalize_url(url)) for url in (plan.target_url,) if url
             ]
             launch_args["args"].extend(fence_arguments(origins))
             self._fence_active = True

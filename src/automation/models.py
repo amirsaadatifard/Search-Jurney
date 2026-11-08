@@ -9,9 +9,14 @@ with every session.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Final
 
+from src.app.constants import DEFAULT_SEARCH_RESULTS
 from src.domain.enums import ScreenshotKind, SessionState, SessionStatus
+
+# How a journey reaches its target.
+MODE_GOOGLE: Final = "google"  # read the real ranking first, then open the target
+MODE_DIRECT: Final = "direct"  # open the target without a search step
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,18 +52,25 @@ class ProxySettings:
 
 @dataclass(frozen=True, slots=True)
 class ScreenshotPolicy:
-    search_results: bool = True
+    """Which moments of a journey are photographed.
+
+    ``SEARCH_RESULTS`` belongs to the version of this project that browsed a
+    local results page. A journey now reads its ranking from the search API and
+    only opens the target, so no results page exists to photograph; the kind
+    stays in :class:`~src.domain.enums.ScreenshotKind` because old sessions still
+    reference it, and :meth:`allows` never enables it.
+    """
+
     target_opened: bool = True
     session_end: bool = True
     error: bool = True
 
     def allows(self, kind: ScreenshotKind) -> bool:
         return {
-            ScreenshotKind.SEARCH_RESULTS: self.search_results,
             ScreenshotKind.TARGET_OPENED: self.target_opened,
             ScreenshotKind.SESSION_END: self.session_end,
             ScreenshotKind.ERROR: self.error,
-        }[kind]
+        }.get(kind, False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,10 +80,8 @@ class SessionPlan:
     scenario_id: int | None
     scenario_name: str
     keyword: str
-    search_url: str
     target_url: str
     target_domain: str
-    simulated_position: int | None
     min_dwell_seconds: int
     max_dwell_seconds: int
     iterations: int
@@ -85,13 +95,18 @@ class SessionPlan:
     proxy: ProxySettings | None = None
     screenshots: ScreenshotPolicy = ScreenshotPolicy()
     timeout_seconds: int = 30
-    # "lab": search in the local simulator.  "direct": open ``target_url`` directly because a
-    # real search provider already observed the target (Google Research mode).
-    mode: str = "lab"
+    # ``MODE_GOOGLE``: ask the real search provider where the target ranks, then open it.
+    # ``MODE_DIRECT``: open ``target_url`` directly because a search was already
+    # observed (Google Research mode) or because Google cannot list this site at all.
+    mode: str = MODE_GOOGLE
     observation_id: int | None = None
     observed_position: int | None = None
     observed_result_count: int | None = None
     provider: str = ""
+    # Query options handed to the search provider when ``mode`` is ``MODE_GOOGLE``.
+    search_language: str = ""
+    search_country: str = ""
+    requested_results: int = DEFAULT_SEARCH_RESULTS
 
     def snapshot(self) -> dict[str, Any]:
         """JSON-safe copy for the audit trail (secrets removed)."""
@@ -103,12 +118,29 @@ class SessionPlan:
 
 @dataclass(frozen=True, slots=True)
 class ResultItem:
-    """One entry parsed from the search results page."""
+    """One entry of a search result list."""
 
     position: int
     title: str
     url: str
     description: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RankObservation:
+    """What the real search provider reported about one keyword.
+
+    Produced by a :class:`~src.automation.rank_observer.RankObserver` before the
+    browser is started. ``position`` is ``None`` when the target was not among
+    the results, which is a *finding*, not an error.
+    """
+
+    provider: str
+    position: int | None = None
+    result_count: int = 0
+    target_url: str = ""
+    observation_id: int | None = None
+    results: tuple[ResultItem, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

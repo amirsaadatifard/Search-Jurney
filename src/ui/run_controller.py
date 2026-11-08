@@ -32,10 +32,12 @@ STATE_LABELS: Final[dict[SessionState, str]] = {
     SessionState.IDLE: "Idle",
     SessionState.INITIALIZING: "Checking safety rules",
     SessionState.STARTING_BROWSER: "Starting the browser",
+    # OPENING_SEARCH and ENTERING_KEYWORD belong to the browser-search flow of
+    # earlier versions; they only appear when an old session is opened.
     SessionState.OPENING_SEARCH: "Opening the search page",
     SessionState.ENTERING_KEYWORD: "Typing the keyword",
-    SessionState.SEARCHING: "Submitting the search",
-    SessionState.ANALYZING_RESULTS: "Reading the results",
+    SessionState.SEARCHING: "Reading the Google ranking",
+    SessionState.ANALYZING_RESULTS: "Looking for the target site",
     SessionState.TARGET_FOUND: "Target found",
     SessionState.TARGET_NOT_FOUND: "Target not found",
     SessionState.OPENING_TARGET: "Opening the target",
@@ -51,13 +53,13 @@ STATE_LABELS: Final[dict[SessionState, str]] = {
 # Fraction of one session that is done when it enters a state (dwelling is dynamic).
 _STATE_PROGRESS: Final[dict[SessionState, float]] = {
     SessionState.INITIALIZING: 0.02,
-    SessionState.STARTING_BROWSER: 0.08,
+    SessionState.SEARCHING: 0.08,
+    SessionState.ANALYZING_RESULTS: 0.18,
+    SessionState.STARTING_BROWSER: 0.34,
     SessionState.OPENING_SEARCH: 0.15,
     SessionState.ENTERING_KEYWORD: 0.22,
-    SessionState.SEARCHING: 0.30,
-    SessionState.ANALYZING_RESULTS: 0.38,
-    SessionState.TARGET_FOUND: 0.42,
-    SessionState.OPENING_TARGET: 0.46,
+    SessionState.TARGET_FOUND: 0.26,
+    SessionState.OPENING_TARGET: 0.40,
     SessionState.TARGET_NOT_FOUND: 0.90,
     SessionState.CAPTURING_RESULT: 0.93,
 }

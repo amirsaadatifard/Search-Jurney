@@ -128,20 +128,43 @@ def begin(window: MainWindow, fake_runs: FakeRuns, qtbot: QtBot, iterations: int
 
 
 # -- pure helpers ------------------------------------------------------------------- #
-def test_session_progress_increases_along_the_journey() -> None:
-    order = [
-        SessionState.INITIALIZING,
-        SessionState.STARTING_BROWSER,
-        SessionState.OPENING_SEARCH,
-        SessionState.ENTERING_KEYWORD,
-        SessionState.SEARCHING,
-        SessionState.ANALYZING_RESULTS,
-        SessionState.TARGET_FOUND,
-        SessionState.OPENING_TARGET,
-        SessionState.DWELLING,
-        SessionState.CAPTURING_RESULT,
-        SessionState.COMPLETED,
-    ]
+@pytest.mark.parametrize(
+    "order",
+    [
+        # a journey that reads its ranking from Google first
+        [
+            SessionState.INITIALIZING,
+            SessionState.SEARCHING,
+            SessionState.ANALYZING_RESULTS,
+            SessionState.TARGET_FOUND,
+            SessionState.STARTING_BROWSER,
+            SessionState.OPENING_TARGET,
+            SessionState.DWELLING,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
+        # a visit of an already observed (or unlistable) site
+        [
+            SessionState.INITIALIZING,
+            SessionState.TARGET_FOUND,
+            SessionState.STARTING_BROWSER,
+            SessionState.OPENING_TARGET,
+            SessionState.DWELLING,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
+        # and a session that stops at the results
+        [
+            SessionState.INITIALIZING,
+            SessionState.SEARCHING,
+            SessionState.ANALYZING_RESULTS,
+            SessionState.TARGET_NOT_FOUND,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
+    ],
+)
+def test_session_progress_increases_along_the_journey(order: list[SessionState]) -> None:
     values = [session_progress(state) for state in order]
     assert values == sorted(values) and values[0] > 0 and values[-1] == 1.0
     assert session_progress(None) == 0 and session_progress(SessionState.IDLE) == 0

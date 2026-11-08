@@ -8,10 +8,37 @@ every URL passes through one component, `DomainSafetyService`
 
 | Allowed | Not implemented, by design |
 | --- | --- |
-| The bundled local search simulator | Any interaction with public search engines |
-| Target sites the user registered **and** approved | Ranking, CTR, impression or analytics manipulation |
+| Reading search data through the **official search API** (`src/search_providers/`) | Any browsing, clicking or scrolling inside a public search engine |
+| Target sites the user registered **and** approved, plus the bundled sample website | Ranking, CTR, impression or analytics manipulation |
 | `http` / `https` only | CAPTCHA solving, anti-bot or rate-limit evasion |
 | Proxy profiles as a network-testing setting | Fingerprint spoofing, IP rotation, proxy scraping, ad clicks |
+
+The search engine is a *data source over an authenticated, documented API*, never a page in the automated
+browser. That is what lets one rule cover both needs: `DomainSafetyService` refuses to open a public search
+engine, and no journey, visit or interaction changes that.
+
+## Where search data comes from
+
+A journey needs to know where a site ranks. That number is read from the
+[Custom Search JSON API](https://developers.google.com/custom-search/v1/overview) — Google's own
+documented, key-authenticated endpoint — through `src/search_providers/google_cse.py`. Everything the
+tool knows about a results page arrives that way:
+
+* no browser is ever navigated to a search engine, so nothing is scraped, clicked, scrolled or
+  measured on Google's own pages; no ranking, CTR or analytics figure is influenced;
+* every query is billed against the user's own quota, so there is nothing to hide behind: no retry
+  loop, no proxy rotation, no fallback source;
+* results are **never invented**. A provider error fails the session with the API's own message; a
+  missing key or engine id stops a run before it starts;
+* each query is stored as an observation (`search_observations`, `observed_results`), so a session can
+  be audited against the exact results the API returned at that moment;
+* the position is labelled with its source, because this API's ranking is not the personalised page a
+  person sees in a browser.
+
+`DomainSafetyService` has no exempt origins at all. Its allowlist used to accept an `internal_origins`
+argument for the bundled search simulator; that parameter is gone, so *approved target sites* are the
+only thing the automation can reach — nothing in the application can be added to the list behind the
+user's back.
 
 ## Rules applied to every URL
 
@@ -27,8 +54,9 @@ machine-readable `reason`.
    allowlist entry can never unlock one (`public_search_engine`). Brand labels are matched under
    any top-level domain (`google.com`, `google.co.uk`, …); `google.com.evil.test` is correctly
    treated as belonging to `evil.test`.
-5. **Allowlist** – the origin must match the application's own simulator or an enabled, approved
-   target site (`not_allowlisted`).
+5. **Allowlist** – the origin must match an enabled **and** approved target site (`not_allowlisted`).
+   The application keeps no server of its own in the allowlist any more; the bundled sample website is a
+   normal, approved target site and can be unapproved like any other.
 
 ### Allowlist matching
 
@@ -55,8 +83,8 @@ browser during a run:
 2. **Network fence** - found by testing: Playwright does **not** call route handlers for the hops of a
    redirect, so an approved site could redirect the browser anywhere and the request would be sent
    before any check ran. The fence closes this below the application. Chromium is launched with a
-   proxy that does not exist and a bypass list naming only the run's two origins (search simulator and
-   target), with the implicit "never proxy localhost" rule removed. Anything else - a redirect target,
+   proxy that does not exist and a bypass list naming only the origin of the run (the journey's approved
+   target site), with the implicit "never proxy localhost" rule removed. Anything else - a redirect target,
    another port on this computer, a raw IP address - fails with `ERR_PROXY_CONNECTION_FAILED` before any
    connection is attempted. The failing hop is still detected through the page's `request` event and
    reported as a safety violation.

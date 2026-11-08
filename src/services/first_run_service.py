@@ -20,7 +20,7 @@ from src.services.settings_service import SettingKey, SettingsService
 
 log = get_logger(__name__)
 
-DEMO_SCENARIO_NAME: Final = "Demo - Local search journey"
+DEMO_SCENARIO_NAME: Final = "Demo - Sample site journey"
 DEMO_SITE_NAME: Final = "Local Demo Site"
 DEMO_BROWSER_NAME: Final = "Default Desktop"
 DEMO_KEYWORD: Final = "handmade ceramic mugs"
@@ -34,7 +34,12 @@ DEMO_KEYWORDS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
 
 
 class FirstRunService:
-    """Creates the demo browser profile, target site, keywords and scenario once."""
+    """Creates the demo browser profile, target site, keywords and scenario once.
+
+    The seeded journey stays runnable with no network at all: its target is the
+    sample website the application serves itself. A real Google journey needs a
+    site the user owns, approves and (for the ranking step) credentials.
+    """
 
     def __init__(self, database: Database, settings: SettingsService, config: AppConfig) -> None:
         self._database = database
@@ -89,13 +94,13 @@ class FirstRunService:
                     Scenario(
                         name=DEMO_SCENARIO_NAME,
                         description=(
-                            "Searches the local simulator, opens the bundled demo site from "
-                            "position 4 and scrolls through it."
+                            "Opens the bundled sample website and scrolls through it. Google "
+                            "cannot list a loopback address, so this journey claims no ranking; "
+                            "point a scenario at a site you own to see its real position first."
                         ),
                         keyword=DEMO_KEYWORD,
                         target_site=site,
                         browser_profile=browser,
-                        simulated_position=4,
                         min_dwell_seconds=8,
                         max_dwell_seconds=15,
                         iterations=2,

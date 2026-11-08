@@ -1,8 +1,8 @@
 """Process-level configuration read from environment variables / ``.env``.
 
 This covers what must be known *before* the database is available (where the
-data directory is, which ports to use). User preferences that can be edited in
-the GUI are stored in the database instead.
+data directory is, which port the bundled sample website listens on). User
+preferences that can be edited in the GUI are stored in the database instead.
 """
 
 from __future__ import annotations
@@ -12,14 +12,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from src.app.constants import (
-    DEFAULT_DATA_DIR_NAME,
-    DEFAULT_SEARCH_PORT,
-    DEFAULT_TARGET_PORT,
-    ENV_PREFIX,
-)
+from src.app.constants import DEFAULT_DATA_DIR_NAME, DEFAULT_TARGET_PORT, ENV_PREFIX
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
@@ -33,19 +28,12 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     data_dir: Path = Path(DEFAULT_DATA_DIR_NAME)
-    search_port: int = Field(DEFAULT_SEARCH_PORT, ge=_MIN_USER_PORT, le=_MAX_PORT)
     target_port: int = Field(DEFAULT_TARGET_PORT, ge=_MIN_USER_PORT, le=_MAX_PORT)
     log_level: LogLevel = "INFO"
     # Optional overrides; by default everything lives inside ``data_dir``.
     database_file: Path | None = None
     logs_dir: Path | None = None
     screenshots_dir: Path | None = None
-
-    @model_validator(mode="after")
-    def _ports_differ(self) -> AppConfig:
-        if self.search_port == self.target_port:
-            raise ValueError("The search simulator and the test site need different ports.")
-        return self
 
     @classmethod
     def from_environment(
