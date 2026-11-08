@@ -1,26 +1,32 @@
 # Automation engine
 
 The engine runs a scenario as a series of *sessions* (one per iteration). Each session follows the same
-journey, and the first step of that journey is a data call, not a page:
+journey, and the first step of that journey is a *read*, not a click:
 
 ```
-ask the search provider where the target ranks → listed?  no → record "not listed", finish
-                                       yes ↓
-                        open the target URL directly → dwell (scroll / visit pages) → screenshot → finish
+find where the target ranks → listed?  no → record "not listed", finish
+                    ↓ yes
+open the target URL directly → dwell (scroll / visit pages) → screenshot → finish
 ```
 
-Nothing is typed into a search engine and no result is clicked; the position comes from the provider's
-real answer (`src/automation/rank_observer.py`) and the browser only ever loads the approved site. A
-journey whose target Google cannot list (the bundled sample website, a private host) skips the ranking
-step and is recorded as a direct visit with no position claimed.
+Two channels answer the first step and `src/automation/rank_observer.py` routes between them:
+`GooglePageRankObserver` reads Google's results page in the browser itself (the scenario's default, no
+key), `GoogleRankObserver` asks the official Custom Search JSON API. Neither clicks a result: the page is
+read, the tab is blanked again, and the visit goes to the *approved address* of the site
+(`src/automation/google_search_page.py` holds the URL builder, the page classification and the numbering
+rules; `search_actions.py` is the only Playwright code that touches Google). A journey whose target Google
+cannot list (the bundled sample website, a private host) skips the ranking step and is recorded as a
+direct visit with no position claimed.
 
 ## Layers
 
 | Module (`src/automation/`) | Responsibility |
 | --- | --- |
 | `models.py` | `SessionPlan` (immutable copy of a scenario), `RankObservation`, results, summaries |
-| `plan_factory.py` | Builds a plan from a stored scenario and the settings, and chooses its mode (`google` / `direct`) |
-| `rank_observer.py` | Reads the real ranking for a keyword from the search provider before the browser starts |
+| `plan_factory.py` | Builds a plan from a stored scenario and the settings, and chooses its mode (`browser` / `google` / `direct`) |
+| `rank_observer.py` | The two rank sources and the router that picks one per plan |
+| `google_search_page.py` | Pure logic of the browser channel: query URL, page classification, result numbering |
+| `search_actions.py` | The one navigation to Google's results page: read the links, answer consent, blank the tab |
 | `engine.py` | `AutomationEngine`: the abstract browser backend |
 | `playwright_engine.py` | Chromium implementation, composed of the services below |
 | `browser_manager.py` | Browser/context lifecycle, request guard, redirect watcher |
@@ -40,20 +46,24 @@ end-to-end tests then run the same runner against real Chromium.
 
 ## State machine
 
-```
-                                  ┌→ STARTING_BROWSER ─┐                     (direct visit: no search step)
-IDLE → INITIALIZING ──────────────┤                    ↓
-                                  └→ SEARCHING → ANALYZING_RESULTS → TARGET_FOUND → OPENING_TARGET
-                                                    │                                   ↓
-                                                    └→ TARGET_NOT_FOUND       DWELLING ⇄ INTERACTING
-                                                                                     └→ CAPTURING_RESULT → COMPLETED
-any active state → FAILED | STOPPED | PAUSED (resume returns to the interrupted state)
-```
+Every session begins `IDLE → INITIALIZING`, ends in `COMPLETED | FAILED | STOPPED`, and any active state
+may be interrupted by `PAUSED` (resuming returns to the interrupted state) or by `FAILED` / `STOPPED`.
+What lies between them is the scenario's channel:
 
-`SEARCHING` is the provider query and `ANALYZING_RESULTS` the domain match against its answer, so the
-browser is only started for a target the real results actually list. `OPENING_SEARCH` and
-`ENTERING_KEYWORD` remain in the enum - they belong to sessions recorded when the project browsed a
-local results page - and the state machine still accepts them so old sessions stay readable.
+- **API channel** - `SEARCHING → ANALYZING_RESULTS → TARGET_FOUND → STARTING_BROWSER → OPENING_TARGET →
+  DWELLING ⇄ INTERACTING → CAPTURING_RESULT`, or `… → TARGET_NOT_FOUND → CAPTURING_RESULT` when the site
+  is not listed; no browser is ever started for that second outcome.
+- **Browser channel** - `OPENING_SEARCH → SEARCHING → ANALYZING_RESULTS →` the same tail. `OPENING_SEARCH`
+  is the read of Google's results page, and Chromium is started inside that state: the browser is the
+  instrument here, so no separate `STARTING_BROWSER` step follows (the `BROWSER_STARTED` event is still
+  recorded).
+- **Direct visit** - `TARGET_FOUND → STARTING_BROWSER → OPENING_TARGET → …`: nothing to ask Google about,
+  because the ranking was already observed on the Google Research page or because Google cannot list the
+  site at all.
+
+`SEARCHING` is the query (page or API) and `ANALYZING_RESULTS` the domain match against its answer.
+`ENTERING_KEYWORD` is legal but unused: it belongs to sessions recorded when the project typed into a
+local results page, and old rows stay readable.
 
 Illegal transitions raise `InvalidStateTransitionError`. Every transition updates the session row, so
 the database always shows the current state; each timeline event also records the state it happened in.

@@ -134,8 +134,8 @@ class SettingsPage(BasePage):
         card = Card("Automation defaults")
         card.body.addWidget(
             _muted(
-                "Used for new scenarios (dwell times) and for every run (timeout, screenshots, "
-                "how Google is asked for the ranking)."
+                "Used for new scenarios (dwell times) and for every run (timeout, screenshots, and "
+                "the Google query settings both rank sources send)."
             )
         )
 

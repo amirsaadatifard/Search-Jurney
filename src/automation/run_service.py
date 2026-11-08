@@ -22,7 +22,7 @@ from src.automation.models import MODE_GOOGLE, RunSummary, SessionPlan
 from src.automation.observer import RunObserver, SafeObserver
 from src.automation.plan_factory import PlanFactory
 from src.automation.playwright_engine import PlaywrightEngine
-from src.automation.rank_observer import RankObserver
+from src.automation.rank_observer import RankObserver, RankObserverRouter
 from src.automation.recorder import SessionRecorder
 from src.automation.screenshot_service import ScreenshotService
 from src.automation.session_runner import SessionRunner
@@ -108,8 +108,12 @@ class AutomationRunService:
         """Refuse a run whose journeys need real search data the app cannot obtain.
 
         Failing here costs nothing; failing inside the first iteration leaves a
-        half-recorded session and a much less helpful message.
+        half-recorded session and a much less helpful message. Which source a
+        journey needs is the scenario's choice, so the observer decides.
         """
+        if isinstance(self._rank_observer, RankObserverRouter):
+            self._rank_observer.check(plans)
+            return
         if not any(plan.mode == MODE_GOOGLE for plan in plans):
             return
         if self._rank_observer is not None and self._rank_observer.credentials_ready:

@@ -36,14 +36,16 @@ The project brief required tests for the areas below; each maps to files here.
 
 | Required area | Tests |
 | --- | --- |
-| URL validation | `unit/test_safety_service.py` (normalisation, 18 rejection cases) |
+| URL validation | `unit/test_safety_service.py` (normalisation, 18 rejection cases, the search scope) |
 | Domain allowlist | `unit/test_safety_service.py`, `unit/test_management_services.py` |
 | Scenario validation, dwell range | `unit/test_management_services.py` (parametrised per field), `unit/test_repositories.py` (database check constraints) |
 | Repositories | `unit/test_repositories.py`, `integration/test_migrations.py` |
 | Report calculations | `unit/test_reports.py` (metrics with hand-computed numbers, filters, exporters) |
 | Sample website and server manager | `integration/test_local_servers.py` |
 | Search API client and ranking | `unit/test_google_research.py` against a local double of the API (`tests/helpers/fake_google.py`) |
-| Ranking step of a journey | `unit/test_session_runner.py` (fake rank observer) and `e2e/test_automation_e2e.py` (the real HTTP double) |
+| Ranking step of a journey | `unit/test_session_runner.py` (fake rank observer, and the real page reader against a fake engine) and `e2e/test_automation_e2e.py` (the real HTTP double) |
+| Reading Google's page | `unit/test_google_search_page.py` (query URL, page classification, result numbering) and `unit/test_search_page_actions.py` (navigation, consent, captcha, blanking - a fake Playwright page, never google.com) |
+| The search scope's limits | `unit/test_safety_service.py` (`check_search_url`, `is_search_origin`, the fence's added origins) |
 | Target discovery | `integration/test_local_servers.py`, `unit/test_session_runner.py`, `e2e/` (positions 1, 4, 7, 10 and not listed) |
 | Session state machine | `unit/test_automation_core.py` (every legal and illegal transition), `unit/test_session_runner.py` |
 | Configuration import/export | `unit/test_phase10_services.py` |

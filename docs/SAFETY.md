@@ -8,37 +8,62 @@ every URL passes through one component, `DomainSafetyService`
 
 | Allowed | Not implemented, by design |
 | --- | --- |
-| Reading search data through the **official search API** (`src/search_providers/`) | Any browsing, clicking or scrolling inside a public search engine |
+| Reading search data through the **official search API** (`src/search_providers/`), or one read of Google's results page in the browser when the user chose that channel | Any browsing, clicking or scrolling inside a search engine beyond that single read |
 | Target sites the user registered **and** approved, plus the bundled sample website | Ranking, CTR, impression or analytics manipulation |
 | `http` / `https` only | CAPTCHA solving, anti-bot or rate-limit evasion |
 | Proxy profiles as a network-testing setting | Fingerprint spoofing, IP rotation, proxy scraping, ad clicks |
 
-The search engine is a *data source over an authenticated, documented API*, never a page in the automated
-browser. That is what lets one rule cover both needs: `DomainSafetyService` refuses to open a public search
-engine, and no journey, visit or interaction changes that.
+A journey needs to know where a site ranks, and the user chooses the channel per scenario. Both are
+allowed to reach Google, and only for that one question:
 
-## Where search data comes from
+* **Google in the browser** (default, no key): Chromium navigates to `https://www.google.com/search?q=…`,
+  reads the result links and the tab is left on a blank page. This is *not* the API route and Google's
+  terms of service forbid it, so the exception around it is kept as small as possible — see below.
+* **Google API**: the [Custom Search JSON API](https://developers.google.com/custom-search/v1/overview),
+  Google's own documented, key-authenticated endpoint, reached through
+  `src/search_providers/google_cse.py`. No browser is involved at all.
 
-A journey needs to know where a site ranks. That number is read from the
-[Custom Search JSON API](https://developers.google.com/custom-search/v1/overview) — Google's own
-documented, key-authenticated endpoint — through `src/search_providers/google_cse.py`. Everything the
-tool knows about a results page arrives that way:
+## What the browser channel may and may not do
 
-* no browser is ever navigated to a search engine, so nothing is scraped, clicked, scrolled or
-  measured on Google's own pages; no ranking, CTR or analytics figure is influenced;
-* every query is billed against the user's own quota, so there is nothing to hide behind: no retry
-  loop, no proxy rotation, no fallback source;
+The whole permission is one object (`SearchScope`: the entry URL plus the origins its page loads) that
+three places consult, and nothing else:
+
+| Step | Check |
+| --- | --- |
+| `SearchPageActions.read` | `check_search_url`: the exact origin and path of the entry, a query string, nothing else |
+| the network fence at launch | `search_origins()`: those origins are added to the bypass list, so other hosts still fail before connecting |
+| the request guard | the results page's own assets, and only while `BrowserSession.search_scope_open` is set by the read itself |
+
+Outside that window nothing gains access: `check_url` still refuses every public search engine, a result
+link is never opened (`normalize_result_link` unwraps it only to record the *destination* as the target
+URL, which is then checked against the allowlist like any other address), the page is never scrolled,
+re-queried, retried or photographed, and a captcha is reported as an error rather than worked around. One
+read per iteration is spaced by `pace_query`, which is courtesy and not evasion. A target site may be
+registered with `approved_for_automation` on `https://www.google.com` and the visit would still be refused.
+
+Rules that keep the rest of the journey ordinary:
+
+* the ranking is read, then the tab is blanked; the visit goes to the approved address;
+* every scope check during the dwell (`_verify_scope`) uses `check_url`, so a session can never idle on a
+  search engine;
+* a browser-channel journey that finds nothing stores no screenshot of Google's page.
+
+## Auditing the API channel
+
+* on the API channel every query is billed against the user's own quota, so there is nothing to hide
+  behind: no retry loop, no proxy rotation, no fallback source;
 * results are **never invented**. A provider error fails the session with the API's own message; a
   missing key or engine id stops a run before it starts;
 * each query is stored as an observation (`search_observations`, `observed_results`), so a session can
   be audited against the exact results the API returned at that moment;
-* the position is labelled with its source, because this API's ranking is not the personalised page a
-  person sees in a browser.
+* the position is labelled with its source (`google-browser` or the API's own name), because neither
+  ranking is the personalised page a particular person happens to see.
 
-`DomainSafetyService` has no exempt origins at all. Its allowlist used to accept an `internal_origins`
-argument for the bundled search simulator; that parameter is gone, so *approved target sites* are the
-only thing the automation can reach — nothing in the application can be added to the list behind the
-user's back.
+`DomainSafetyService` has no exempt origins in its *allowlist*: an entry there is either an approved
+target site or nothing. Its one narrow exception is the search scope above, held as data and readable only
+by the three call sites listed, so nothing in the application can widen it behind the user's back. (The
+allowlist used to accept an `internal_origins` argument for the bundled search simulator; that parameter
+is gone.)
 
 ## Rules applied to every URL
 
@@ -53,7 +78,8 @@ machine-readable `reason`.
 4. **Public search engines** – refused unconditionally, *before* the allowlist is consulted, so an
    allowlist entry can never unlock one (`public_search_engine`). Brand labels are matched under
    any top-level domain (`google.com`, `google.co.uk`, …); `google.com.evil.test` is correctly
-   treated as belonging to `evil.test`.
+   treated as belonging to `evil.test`. `check_search_url` is the separate, purpose-specific entry
+   point the browser channel uses (`search_scope`); it is not reachable from `check_url`.
 5. **Allowlist** – the origin must match an enabled **and** approved target site (`not_allowlisted`).
    The application keeps no server of its own in the allowlist any more; the bundled sample website is a
    normal, approved target site and can be unapproved like any other.

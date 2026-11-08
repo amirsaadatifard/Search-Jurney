@@ -19,7 +19,8 @@ from fastapi.testclient import TestClient
 from src.app.constants import LOOPBACK_HOST
 from src.app.container import AppContainer
 from src.app.health import HealthStatus, is_port_available
-from src.automation.models import MODE_GOOGLE
+from src.automation.models import MODE_BROWSER, MODE_GOOGLE
+from src.domain.enums import SearchProfile
 from src.domain.schemas import ScenarioInput
 from src.local_servers.common import SECURITY_HEADERS
 from src.local_servers.server_manager import LocalServer, LocalServerManager, ServerStartError
@@ -226,9 +227,16 @@ def test_a_journey_against_a_real_domain_binds_no_local_port(
     )
     scenario = container.scenarios.search()[0]
     data = {name: getattr(scenario, name) for name in ScenarioInput.model_fields}
-    container.scenarios.update(scenario.id, data | {"target_site_id": site.id})
     fake_google.state.items = [result_item(1, "https://shop.example/")]
 
     assert not container.servers.all_running
-    plan = container.runs.build_plans([scenario.id])[0]
-    assert plan.mode == MODE_GOOGLE and not container.servers.all_running
+    # Either way of reading the ranking asks Google, not a server of ours.
+    for profile, mode in (
+        (SearchProfile.GOOGLE_API, MODE_GOOGLE),
+        (SearchProfile.GOOGLE_BROWSER, MODE_BROWSER),
+    ):
+        container.scenarios.update(
+            scenario.id, data | {"target_site_id": site.id, "search_profile": profile}
+        )
+        plan = container.runs.build_plans([scenario.id])[0]
+        assert plan.mode == mode and not container.servers.all_running

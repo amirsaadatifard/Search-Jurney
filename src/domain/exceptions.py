@@ -82,6 +82,16 @@ class NavigationError(AutomationError):
     """A page failed to load."""
 
 
+class SearchError(AutomationError):
+    """Google's results page could not be read in the browser.
+
+    The browser channel has no fallback: the error says what Google answered
+    (a consent screen it would not click, a captcha, a page it no longer
+    recognises) so the user knows whether to retry later or switch the
+    scenario to the API channel.
+    """
+
+
 class TargetNotFoundError(AutomationError):
     """The target domain is not present in the search results."""
 

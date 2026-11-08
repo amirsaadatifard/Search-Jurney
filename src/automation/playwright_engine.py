@@ -12,8 +12,9 @@ from src.automation.browser_manager import BrowserManager, BrowserSession, trans
 from src.automation.control import RunControl
 from src.automation.engine import AutomationEngine
 from src.automation.interaction_service import InteractionService, ScheduledAction
-from src.automation.models import InteractionOutcome, SessionPlan
+from src.automation.models import InteractionOutcome, SearchPageRead, SessionPlan
 from src.automation.screenshot_service import ScreenshotService
+from src.automation.search_actions import SearchPageActions
 from src.automation.target_actions import TargetActions
 from src.domain.enums import ScreenshotKind
 from src.domain.exceptions import AutomationError, BrowserLaunchError
@@ -33,6 +34,7 @@ class PlaywrightEngine(AutomationEngine):
     ) -> None:
         self._manager = BrowserManager(safety)
         self._targets = TargetActions(safety)
+        self._searches = SearchPageActions(safety)
         self._interactions = InteractionService(safety, control)
         self._screenshots = screenshots
         self._plan: SessionPlan | None = None
@@ -73,6 +75,11 @@ class PlaywrightEngine(AutomationEngine):
 
     async def open_url(self, url: str) -> str:
         return await self._targets.open_url(self._active(), url)
+
+    async def read_search_page(self, url: str, limit: int) -> SearchPageRead:
+        # The one navigation that is not an approved target site; SearchPageActions
+        # validates it against the search scope and leaves the tab blank again.
+        return await self._searches.read(self._active(), url, limit)
 
     async def perform_safe_interaction(
         self, action: ScheduledAction, rng: random.Random

@@ -32,9 +32,10 @@ STATE_LABELS: Final[dict[SessionState, str]] = {
     SessionState.IDLE: "Idle",
     SessionState.INITIALIZING: "Checking safety rules",
     SessionState.STARTING_BROWSER: "Starting the browser",
-    # OPENING_SEARCH and ENTERING_KEYWORD belong to the browser-search flow of
-    # earlier versions; they only appear when an old session is opened.
-    SessionState.OPENING_SEARCH: "Opening the search page",
+    # OPENING_SEARCH is the browser channel's own step: Chromium opens the results
+    # page. ENTERING_KEYWORD is left over from a flow that typed into the search
+    # box; it only appears when an old session is opened.
+    SessionState.OPENING_SEARCH: "Reading Google's results page",
     SessionState.ENTERING_KEYWORD: "Typing the keyword",
     SessionState.SEARCHING: "Reading the Google ranking",
     SessionState.ANALYZING_RESULTS: "Looking for the target site",
@@ -53,12 +54,12 @@ STATE_LABELS: Final[dict[SessionState, str]] = {
 # Fraction of one session that is done when it enters a state (dwelling is dynamic).
 _STATE_PROGRESS: Final[dict[SessionState, float]] = {
     SessionState.INITIALIZING: 0.02,
-    SessionState.SEARCHING: 0.08,
-    SessionState.ANALYZING_RESULTS: 0.18,
-    SessionState.STARTING_BROWSER: 0.34,
     SessionState.OPENING_SEARCH: 0.15,
-    SessionState.ENTERING_KEYWORD: 0.22,
+    SessionState.ENTERING_KEYWORD: 0.17,
+    SessionState.SEARCHING: 0.18,
+    SessionState.ANALYZING_RESULTS: 0.22,
     SessionState.TARGET_FOUND: 0.26,
+    SessionState.STARTING_BROWSER: 0.34,
     SessionState.OPENING_TARGET: 0.40,
     SessionState.TARGET_NOT_FOUND: 0.90,
     SessionState.CAPTURING_RESULT: 0.93,
@@ -215,6 +216,7 @@ class RunController(QObject):
         self._elapsed_base = 0.0
         self._running_since: float | None = None
         self._last_active_state: SessionState | None = None
+        self._session_progress = 0.0
 
     @property
     def is_active(self) -> bool:
@@ -253,7 +255,14 @@ class RunController(QObject):
             return 0.0
         current = 0.0
         if self.phase is not RunPhase.IDLE and self.done_sessions < self.total_sessions:
-            current = session_progress(self._last_active_state, self.dwell_fraction())
+            current = max(
+                session_progress(self._last_active_state, self.dwell_fraction()),
+                self._session_progress,
+            )
+            # Never backwards: the two channels do the same work in a different
+            # order (the browser one opens Chromium before the ranking, the API one
+            # after), and a bar that shrank would read like a failure.
+            self._session_progress = current
         return min((self.done_sessions + current) / self.total_sessions, 1.0)
 
     # -- commands ------------------------------------------------------------------ #
@@ -354,6 +363,7 @@ class RunController(QObject):
         self.dwell_remaining = self.dwell_total = None
         self.waiting_seconds = None
         self._last_active_state = None
+        self._session_progress = 0.0
         self._elapsed_base, self._running_since = 0.0, time.monotonic()
         self.changed.emit()
 

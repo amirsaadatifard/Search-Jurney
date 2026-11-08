@@ -19,8 +19,8 @@ src/services        business rules: scenarios, keywords, target sites, browser a
   └─▶ src/domain        enums, exceptions, validation schemas (depends on nothing)
 
 src/automation        session runner, state machine, engine interface, Playwright
-  │                   engine, run service, rank observer
-  ├─▶ src/search_providers   Google Custom Search JSON API - the real ranking data
+  │                   engine, run service, rank observers, results-page reader
+  ├─▶ src/search_providers   Google Custom Search JSON API - the ranking data of that channel
   └─▶ src/local_servers      the bundled sample website: a page to visit, never a
                              search source
 ```
@@ -28,8 +28,8 @@ src/automation        session runner, state machine, engine interface, Playwrigh
 Allowed dependency direction is **downwards only**. `src/domain` imports nothing from the project;
 `src/database` imports only `domain`; services import database, domain, networking; automation imports
 services, domain and the search provider; `search_providers` imports domain only and talks to the outside
-world. No package below `ui` opens a browser: search data arrives as API results, and the browser is
-driven exclusively by `src/automation`. `src/app` is the *composition root*: the only place that knows
+world. No package below `ui` opens a browser: search data arrives either as API results or as one read of
+Google's results page, and the browser is driven exclusively by `src/automation`. `src/app` is the *composition root*: the only place that knows
 every concrete class.
 
 | Package | Responsibility |
@@ -38,9 +38,9 @@ every concrete class.
 | `domain/` | Enums, exception hierarchy, Pydantic input schemas |
 | `database/` | Engine and sessions, ORM models, repositories, Alembic runner |
 | `services/` | All business rules (see below) |
-| `automation/` | Browser automation: engine interface, state machine, runner, run service, rank observer |
+| `automation/` | Browser automation: engine interface, state machine, runner, run service, rank observers, the Google results-page reader |
 | `local_servers/` | Bundled sample website and `LocalServerManager` - a page to visit, never a search source |
-| `search_providers/` | The real search data: `SearchProvider` protocol, the Google Custom Search JSON API client, domain matching |
+| `search_providers/` | The API channel: `SearchProvider` protocol, the Google Custom Search JSON API client, domain matching (also used by the browser channel's parser) |
 | `networking/` | Credential store (OS keyring), proxy connection tester |
 | `reports/` | CSV / Excel / JSON exporters |
 | `logging_config/` | structlog setup, rotating JSON file, in-memory buffer for the GUI |

@@ -15,7 +15,11 @@ from src.app.container import AppContainer
 from src.app.health import StartupHealthService
 from src.app.paths import PROJECT_ROOT, AppPaths
 from src.automation.plan_factory import PlanFactory
-from src.automation.rank_observer import GoogleRankObserver
+from src.automation.rank_observer import (
+    GooglePageRankObserver,
+    GoogleRankObserver,
+    RankObserverRouter,
+)
 from src.automation.run_service import AutomationRunService
 from src.database.base import utcnow
 from src.database.migrator import DatabaseMigrator
@@ -39,7 +43,7 @@ from src.services.google_research_service import GoogleResearchService
 from src.services.keyword_service import KeywordService
 from src.services.proxy_service import ProxyService
 from src.services.report_service import ReportService
-from src.services.safety_service import DomainSafetyService
+from src.services.safety_service import DomainSafetyService, SearchScope
 from src.services.scenario_service import ScenarioService
 from src.services.session_service import SessionService
 from src.services.settings_service import SettingsService
@@ -53,6 +57,7 @@ def bootstrap(
     paths: AppPaths | None = None,
     credentials: CredentialStore | None = None,
     google_endpoint: str | None = None,
+    search_scope: SearchScope | None = None,
 ) -> AppContainer:
     """Create directories, logging, database and services; return the container.
 
@@ -61,6 +66,8 @@ def bootstrap(
         paths: Explicit paths (tests). Defaults to ``config.data_dir``.
         credentials: Secret store (tests pass an in-memory one). Defaults to the OS store.
         google_endpoint: Search API endpoint (tests point it at a local double).
+        search_scope: Results-page scope of the browser channel (a test points it
+            at a local fixture; production uses Google, and nothing else).
     """
     if config is None:
         config = AppConfig.from_environment(env_file=PROJECT_ROOT / ".env")
@@ -84,7 +91,9 @@ def bootstrap(
     # Every origin a journey may load must be an approved target site; the
     # application no longer keeps a server of its own inside the allowlist, and
     # search data comes from the provider below rather than from a page.
-    safety = DomainSafetyService(allowlist_provider=DatabaseAllowlist(database))
+    safety = DomainSafetyService(
+        allowlist_provider=DatabaseAllowlist(database), search_scope=search_scope
+    )
     servers = LocalServerManager(config.target_port)
     scenarios = ScenarioService(database, settings)
     credentials = credentials or KeyringCredentialStore()
@@ -115,7 +124,9 @@ def bootstrap(
         servers,
         scenarios,
         credentials,
-        rank_observer=GoogleRankObserver(google),
+        # Two ways to read a ranking, and a scenario picks one; the router is
+        # what keeps the runner indifferent to that choice.
+        rank_observer=RankObserverRouter(GoogleRankObserver(google), GooglePageRankObserver()),
     )
     health_service = StartupHealthService(config, paths, database, servers)
     health_report = health_service.run()

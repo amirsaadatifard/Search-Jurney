@@ -2,8 +2,10 @@
 
 The factory also decides *how* a journey reaches its target:
 
-* a normal scenario asks the real search provider where the target site ranks
-  before the browser starts (:data:`MODE_GOOGLE`);
+* a normal scenario asks Google where the target site ranks - in the browser,
+  on the results page itself (:data:`MODE_BROWSER`, no key), or through the
+  official search API (:data:`MODE_GOOGLE`, key and search-engine id) - and the
+  scenario's :class:`~src.domain.enums.SearchProfile` picks which;
 * a target registered as a *local* site — the bundled sample website, which
   Google can never list — is opened directly (:data:`MODE_DIRECT`) and no
   ranking is claimed for it;
@@ -17,6 +19,7 @@ from dataclasses import fields
 
 from src.app.constants import DEFAULT_TIMEOUT_SECONDS
 from src.automation.models import (
+    MODE_BROWSER,
     MODE_DIRECT,
     MODE_GOOGLE,
     BrowserSettings,
@@ -31,7 +34,7 @@ from src.database.models import (
     SearchObservation,
     TargetSite,
 )
-from src.domain.enums import Environment
+from src.domain.enums import Environment, SearchProfile
 from src.domain.exceptions import InvalidConfigurationError
 from src.networking.credentials import CredentialStore, proxy_secret_key
 from src.search_providers import result_domain
@@ -53,8 +56,25 @@ def skips_rank_observation(site: TargetSite) -> bool:
     return site.environment is Environment.LOCAL
 
 
+def search_channel(profile: SearchProfile | str) -> str:
+    """Which search source a stored profile value means.
+
+    ``GOOGLE_API`` is the only value that asks for the API; anything else -
+    including a value this version no longer offers, left by a database from
+    before the browser channel existed - means the browser channel, because
+    that is the one a scenario was configured with when there was no choice.
+    """
+    return MODE_GOOGLE if str(profile) == SearchProfile.GOOGLE_API.value else MODE_BROWSER
+
+
 class PlanFactory:
     """Turns a stored scenario (or an observation) into an immutable run plan."""
+
+    def mode_for(self, scenario: Scenario, site: TargetSite) -> str:
+        """The journey's channel: local visit, results page or search API."""
+        if skips_rank_observation(site):
+            return MODE_DIRECT
+        return search_channel(scenario.search_profile)
 
     def __init__(self, settings: SettingsService, credentials: CredentialStore) -> None:
         self._settings = settings
@@ -178,7 +198,7 @@ class PlanFactory:
             timeout_seconds=int(
                 self._settings.get(SettingKey.DEFAULT_TIMEOUT, DEFAULT_TIMEOUT_SECONDS)
             ),
-            mode=MODE_DIRECT if skips_rank_observation(site) else MODE_GOOGLE,
+            mode=self.mode_for(scenario, site),
             search_language=defaults.search_language,
             search_country=defaults.search_country,
             requested_results=defaults.requested_results,

@@ -63,7 +63,7 @@ def test_foreign_keys_are_enforced(file_database: Database) -> None:
 
 def test_bootstrap_migrates_the_application_database(container: AppContainer) -> None:
     assert container.migrator.is_up_to_date()
-    assert container.migrator.current_revision() == container.migrator.head_revision() == "0003"
+    assert container.migrator.current_revision() == container.migrator.head_revision() == "0004"
 
 
 # -- the Google search-source migration (0002 -> 0003) ------------------------------------ #
@@ -133,7 +133,9 @@ def test_the_google_migration_rewrites_scenarios_that_already_exist(tmp_path: Pa
     migrated.dispose()
 
     assert [name for name, _ in rows] == ["Shop journey", "Demo - Sample site journey"]
-    assert {profile for _, profile in rows} == {"GOOGLE"}
+    # 0003 made every row a real-provider scenario, 0004 then chose the channel
+    # that needs no key for it.
+    assert {profile for _, profile in rows} == {"GOOGLE_BROWSER"}
     assert "simulated_position" not in schema  # the invented rank left the table as well
     assert "ck_scenarios_simulated_position_range" not in schema
     assert "ck_scenarios_dwell_range_ordered" in schema  # the batch rebuild kept the other rules
@@ -162,3 +164,98 @@ def test_rolling_the_migration_back_restores_the_old_shape(tmp_path: Path) -> No
         ).one()
     check.dispose()
     assert (position, profile) == (7, "LOCAL_SIMULATOR")  # the old value comes back on a downgrade
+
+
+# -- the search-channel migration (0003 -> 0004) ------------------------------------------ #
+def scenario_profile(connection: Connection, name: str, profile: str) -> None:
+    """Insert one scenario row, the way a given revision would have written it."""
+    connection.exec_driver_sql(
+        "INSERT INTO scenarios (name, description, keyword, target_site_id, browser_profile_id,"
+        " search_profile, min_dwell_seconds, max_dwell_seconds, iterations,"
+        " delay_between_iterations, scroll_enabled, max_scroll_actions,"
+        " clear_cookies_between_sessions, clear_storage_between_sessions, incognito, enabled,"
+        " created_at, updated_at)"
+        " VALUES (?, '', 'mugs', 1, 1, ?, 5, 10, 2, 3, 1, 4, 1, 1, 1, 1,"
+        " '2026-01-01 10:00:00', '2026-01-01 10:00:00')",
+        (name, profile),
+    )
+
+
+def _rows_ready(tmp_path: Path, revision: str) -> Database:
+    """A database at ``revision``, with the two profiles a scenario needs."""
+    database = Database.for_file(tmp_path / "channels.db")
+    migrate_to(database.url, revision)
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO target_sites (id, display_name, base_url, domain, environment, notes,"
+            " enabled, approved_for_automation, created_at, updated_at)"
+            " VALUES (1, 'Site', 'https://shop.example/', 'shop.example', 'CONTROLLED_TEST', '',"
+            " 1, 1, '2026-01-01 10:00:00', '2026-01-01 10:00:00')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO browser_profiles (id, name, viewport_width, viewport_height, headless,"
+            " locale, timezone, downloads_enabled, javascript_enabled, clear_storage,"
+            " user_agent_mode, created_at, updated_at)"
+            " VALUES (1, 'Profile', 1280, 800, 0, '', '', 0, 1, 1, 'BROWSER_DEFAULT',"
+            " '2026-01-01 10:00:00', '2026-01-01 10:00:00')"
+        )
+        connection.commit()
+    return database
+
+
+def test_the_channel_migration_moves_existing_scenarios_to_the_key_free_channel(
+    tmp_path: Path,
+) -> None:
+    """A scenario stored when only one channel existed needs no key, so it gets none."""
+    database = _rows_ready(tmp_path, "0003")
+    with database.engine.connect() as connection:
+        scenario_profile(connection, "Shop journey", "GOOGLE")
+        scenario_profile(connection, "Chosen API", "GOOGLE_API")
+        connection.commit()
+    database.dispose()
+
+    migrated = Database.for_file(tmp_path / "channels.db")
+    with migrated.engine.connect() as connection:
+        profiles = dict(
+            connection.exec_driver_sql("SELECT name, search_profile FROM scenarios").fetchall()
+        )
+        schema = connection.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='scenarios'"
+        ).scalar_one()
+    migrated.dispose()
+
+    assert profiles == {"Shop journey": "GOOGLE_BROWSER", "Chosen API": "GOOGLE_API"}
+    assert "simulated_position" not in schema  # the rebuild carried 0003's work forward
+    assert "ck_scenarios_dwell_range_ordered" in schema
+
+
+def test_a_scenario_that_chose_the_api_keeps_it_through_a_downgrade(tmp_path: Path) -> None:
+    """Downgrading loses the *choice*, not the data: every row goes back to one channel."""
+    database = Database.for_file(tmp_path / "down.db")
+    migrate_to(database.url, "0004")
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO target_sites (id, display_name, base_url, domain, environment, notes,"
+            " enabled, approved_for_automation, created_at, updated_at)"
+            " VALUES (1, 'Site', 'https://shop.example/', 'shop.example', 'CONTROLLED_TEST', '',"
+            " 1, 1, '2026-01-01 10:00:00', '2026-01-01 10:00:00')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO browser_profiles (id, name, viewport_width, viewport_height, headless,"
+            " locale, timezone, downloads_enabled, javascript_enabled, clear_storage,"
+            " user_agent_mode, created_at, updated_at)"
+            " VALUES (1, 'Profile', 1280, 800, 0, '', '', 0, 1, 1, 'BROWSER_DEFAULT',"
+            " '2026-01-01 10:00:00', '2026-01-01 10:00:00')"
+        )
+        scenario_profile(connection, "Chosen API", "GOOGLE_API")
+        connection.commit()
+    database.dispose()
+
+    url = Database.for_file(tmp_path / "down.db").url
+    migrate_to(url, "0003")
+
+    check = Database.for_file(tmp_path / "down.db")
+    with check.engine.connect() as connection:
+        profile = connection.exec_driver_sql("SELECT search_profile FROM scenarios").scalar_one()
+    check.dispose()
+    assert profile == "GOOGLE"

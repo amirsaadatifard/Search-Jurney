@@ -22,8 +22,9 @@ class Scenario(TimestampMixin, Base):
     """What to search for, which approved site to open and how to behave there.
 
     The ranking a journey starts from is *observed*, never configured:
-    :attr:`search_profile` names the real search provider that answers for the
-    :attr:`keyword`, and the position found there is stored on the session.
+    :attr:`search_profile` chooses the channel that observes it - Google's own
+    results page in the browser, or the official search API - and the position
+    found there is stored on the session.
     """
 
     __tablename__ = "scenarios"
@@ -50,7 +51,7 @@ class Scenario(TimestampMixin, Base):
         ForeignKey("proxy_profiles.id", ondelete="SET NULL"), index=True
     )
     search_profile: Mapped[SearchProfile] = mapped_column(
-        enum_type(SearchProfile), default=SearchProfile.GOOGLE, nullable=False
+        enum_type(SearchProfile), default=SearchProfile.GOOGLE_BROWSER, nullable=False
     )
 
     min_dwell_seconds: Mapped[int] = mapped_column(Integer, nullable=False)

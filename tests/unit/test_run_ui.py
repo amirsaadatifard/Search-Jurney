@@ -153,6 +153,20 @@ def begin(window: MainWindow, fake_runs: FakeRuns, qtbot: QtBot, iterations: int
             SessionState.CAPTURING_RESULT,
             SessionState.COMPLETED,
         ],
+        # the browser channel: the same work, with Chromium opened first
+        [
+            SessionState.INITIALIZING,
+            SessionState.OPENING_SEARCH,
+            SessionState.SEARCHING,
+            SessionState.ANALYZING_RESULTS,
+            SessionState.TARGET_FOUND,
+            SessionState.OPENING_TARGET,
+            SessionState.DWELLING,
+            SessionState.INTERACTING,
+            SessionState.DWELLING,
+            SessionState.CAPTURING_RESULT,
+            SessionState.COMPLETED,
+        ],
         # and a session that stops at the results
         [
             SessionState.INITIALIZING,
@@ -173,6 +187,26 @@ def test_session_progress_increases_along_the_journey(order: list[SessionState])
     )
     assert session_progress(SessionState.DWELLING, 9) == session_progress(SessionState.DWELLING, 1)
     assert session_progress(SessionState.FAILED) == session_progress(SessionState.STOPPED) == 1.0
+
+
+def test_a_session_that_starts_the_browser_early_still_moves_forward(
+    window: MainWindow, fake_runs: FakeRuns, qtbot: QtBot
+) -> None:
+    """The browser channel opens Chromium inside its search step: the bar must not shrink."""
+    runs = window.runs
+    begin(window, fake_runs, qtbot)
+
+    def step(state: SessionState) -> None:
+        fake_runs.drive(lambda o: o.on_state_changed(state, state.value))
+        qtbot.waitUntil(lambda: runs.state is state)
+
+    before = runs.progress()
+    step(SessionState.STARTING_BROWSER)
+    during_search = runs.progress()
+    step(SessionState.OPENING_SEARCH)
+    after_search = runs.progress()
+    assert during_search > before
+    assert after_search >= during_search
 
 
 def test_event_tones() -> None:

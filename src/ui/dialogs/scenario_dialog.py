@@ -1,8 +1,9 @@
 """Dialog for creating/editing a scenario.
 
-The search source is not a choice any more — every scenario reads its ranking
-from the real Google results, so the form configures the keyword, the approved
-site to open and the behaviour on that page only.
+Every scenario reads a real Google ranking for its keyword; what the form lets
+the user decide is *how*: Google's own results page in the browser (nothing to
+configure, but against Google's terms and answerable with a captcha) or Google's
+official search API (needs a key and a search-engine id).
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 from src.database.models import Scenario
+from src.domain.enums import Environment, SearchProfile
 from src.services.scenario_service import ScenarioFormOptions
+from src.ui.formatting import SEARCH_PROFILE_LABELS
 from src.ui.widgets.form_dialog import FormDialog, Submit, make_combo
 
 
@@ -56,6 +59,7 @@ class ScenarioDialog(FormDialog):
         super().__init__("Edit scenario" if scenario else "New scenario", submit, parent, 600)
         self.resize(620, 760)
         s = scenario
+        self._sites = list(options.target_sites)
 
         # General ------------------------------------------------------------------
         self.name_input = QLineEdit(s.name if s else "")
@@ -79,6 +83,15 @@ class ScenarioDialog(FormDialog):
                 for site in options.target_sites
             ],
             s.target_site_id if s else None,
+        )
+
+        self.profile_input = make_combo(
+            [(label, profile.value) for profile, label in SEARCH_PROFILE_LABELS.items()],
+            s.search_profile if s else SearchProfile.GOOGLE_BROWSER,
+        )
+        self.profile_input.setToolTip(
+            "The browser channel needs no key and sees exactly what this browser is shown.\n"
+            "The API channel is the one Google permits, and needs a key and an engine id."
         )
 
         # Timing -----------------------------------------------------------------------
@@ -137,12 +150,23 @@ class ScenarioDialog(FormDialog):
             "Only enabled, approved sites can be used.",
         )
         self.add_field(
-            "search_source",
-            "Search source",
-            _read_only("Google (official search API)"),
-            "Before each iteration the real ranking of this site is read for the keyword; "
-            "the iteration then opens the site directly. Nothing is typed into google.com.",
+            "search_profile",
+            "Rank source",
+            self.profile_input,
+            "Before each iteration the ranking of this site is read for the keyword, then "
+            "the approved site itself is opened. 'Google in the browser' needs no key but "
+            "goes against Google's terms and can be blocked; 'Google API' is permitted and "
+            "needs a key and a search-engine id under Google Research.",
         )
+        self.local_note = _read_only(
+            "This target is the local sample site, which Google cannot list: "
+            "it is visited directly and no ranking is claimed."
+        )
+        self.local_note.setVisible(self._target_is_local())
+        self.target_input.currentIndexChanged.connect(
+            lambda _: self.local_note.setVisible(self._target_is_local())
+        )
+        self.add_field("search_note", "", self.local_note)
 
         self.add_section("Timing")
         self.add_row(
@@ -175,12 +199,19 @@ class ScenarioDialog(FormDialog):
         self.add_checkbox("enabled", self.enabled_input)
         self.finish()
 
+    def _target_is_local(self) -> bool:
+        """Whether the chosen target site is the loopback sample site."""
+        site_id = self.target_input.currentData()
+        site = next((item for item in self._sites if item.id == site_id), None)
+        return site is not None and site.environment is Environment.LOCAL
+
     def values(self) -> dict[str, Any]:
         return {
             "name": self.name_input.text(),
             "description": self.description_input.toPlainText(),
             "keyword": self.keyword_input.currentText(),
             "target_site_id": self.target_input.currentData(),
+            "search_profile": self.profile_input.currentData(),
             "min_dwell_seconds": self.min_dwell_input.value(),
             "max_dwell_seconds": self.max_dwell_input.value(),
             "iterations": self.iterations_input.value(),

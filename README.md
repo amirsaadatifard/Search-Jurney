@@ -8,11 +8,19 @@ test scenarios: look up a keyword on Google, see where your site actually ranks 
 stay for a configured dwell time while scrolling, record every step, and report on the outcome. You can
 watch each run live.
 
-It is a university capstone project. Search data is **real**: it comes from Google's official
-[Custom Search JSON API](https://developers.google.com/custom-search/v1/overview), which needs your own
-API key and search-engine id (two minutes to set up — see [Google setup](#google-setup)). Pages are opened
-only for sites you approve: your own production site, a development/staging site, or the **bundled local
-sample website** that ships with the project for offline practice.
+It is a university capstone project. Search data is **real**, and each scenario picks how it is read:
+
+* **Google in the browser** (the default, nothing to configure): Chromium opens Google's own results page
+  for the keyword, the position is read from that page and the browser is then used for the visit. No API
+  key, no quota, and the rank is exactly what this browser was shown. Be aware that automated access is
+  against Google's terms of service, so Google may answer with a captcha instead of results; the session
+  then fails and says so — the application never tries to get past it.
+* **Google API**: the official [Custom Search JSON API](https://developers.google.com/custom-search/v1/overview),
+  which is permitted and stable but needs your own API key and search-engine id (two minutes to set up,
+  see [Google setup](#google-setup)).
+
+Pages are opened only for sites you approve: your own production site, a development/staging site, or the
+**bundled local sample website** that ships with the project for offline practice.
 
 ## Google setup
 
@@ -25,6 +33,9 @@ sample website** that ships with the project for offline practice.
    values and press *Save credentials*. The key goes into the operating system's credential store (never
    into the database); the engine id is a plain setting. *Test Google connection* then confirms them with
    a single query, and *Run system checks* reports key, quota reachability, Chromium and the allowlist.
+
+*Only needed for the API channel.* Scenario runs with the browser channel ask for no key at all; the
+Google Research page stores its own observations through the API, so the two channels stay comparable.
 
 What the API's limits mean for this tool: ten results per page and at most one hundred per query, a free
 daily quota (Google bills beyond it), and a ranking that is *this API's* ranking — personalisation,
@@ -60,7 +71,7 @@ How this is enforced in code: [docs/SAFETY.md](docs/SAFETY.md).
 | Keywords | Library with tags and notes, bulk add, TXT/CSV import, CSV export |
 | Target sites | Approved-sites allowlist with environments; approval needs an explicit confirmation |
 | Profiles | Browser profiles (viewport, locale, time zone, headless …); proxy profiles with secure password storage and a connection test |
-| Search data | Real Google results via the official Custom Search JSON API: rank, URL, snippet and result count per keyword, stored as an observation |
+| Search data | Real Google ranking, read either from the results page in the browser (no key) or from the official Custom Search JSON API (key): rank, URL and result count per keyword; API queries are also stored as observations |
 | Sample website | A five-page local site (FastAPI) to practise visits on, with long pages, scrollable content and safety fixtures |
 | Automation | Playwright/Chromium journeys, 17-state state machine, pause / resume / stop, safe scrolling and page visits |
 | Live view | Current step, URL, target position, session clock, dwell countdown, live browser picture, event timeline |
@@ -147,14 +158,20 @@ Other entry points:
 
 ```
 ask Google for the keyword → is the target site in the real results?
-   ├─ no  → record "not listed" (a result, not an error) and stop: no page is loaded
+   ├─ no  → record "not listed" (a result, not an error) and stop
    └─ yes → record the observed position → open the site directly
             → dwell (scroll, visit another page of the site) → screenshot → finish
 ```
 
-Only the *visit* is a browser journey; the search itself is an API call, so no request ever reaches
-google.com. A journey whose target Google cannot index (the local sample site, a private development
-host) skips the ranking step and is recorded as a direct visit without a position.
+With the browser channel, "ask Google" means one navigation: Chromium opens
+`https://www.google.com/search?q=…`, the result links are read out of the page, and the tab is left blank
+again — no result is clicked, nothing is scrolled, a refusal is reported rather than worked around, and
+Google's page is never stored. The position found there is what the timeline records.
+
+With the API channel the ranking arrives before any browser exists, so a site that is not listed loads no
+page at all. Either way the *visit* uses the approved address of the site, never a link the search engine
+served. A journey whose target Google cannot index (the local sample site, a private development host)
+skips the ranking step and is recorded as a direct visit without a position.
 
 Every step is a state of a validated state machine, is written to the database as an event, and is
 shown live. Details: [docs/AUTOMATION_ENGINE.md](docs/AUTOMATION_ENGINE.md).

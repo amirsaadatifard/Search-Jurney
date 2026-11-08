@@ -43,7 +43,7 @@ CAPTCHA or bot-protection bypass; fingerprint spoofing; IP rotation; proxy scrap
 | FR2 | Manage a reusable keyword library (bulk add, TXT/CSV import, CSV export, tags, notes) | `services/keyword_service.py` |
 | FR3 | Manage approved target sites with environments; automation never starts on an unapproved site | `services/target_site_service.py`, `safety_service.py` |
 | FR4 | Manage browser profiles and proxy profiles (secure password storage, connection test with latency) | `services/proxy_service.py`, `networking/` |
-| FR5 | Real ranking data: the observed position of the target site, read from Google's Custom Search JSON API and stored as an auditable observation | `search_providers/`, `services/google_research_service.py`, `automation/rank_observer.py` |
+| FR5 | Real ranking data: the observed position of the target site, read either from Google's results page in the browser (no key) or from Google's Custom Search JSON API (stored as an auditable observation) | `search_providers/`, `services/google_research_service.py`, `automation/rank_observer.py` |
 | FR6 | Local sample website with several long pages | `local_servers/target_site/` |
 | FR7 | Run a journey: query the provider, find the target in its real results, open the site, dwell, scroll, record, repeat | `automation/` |
 | FR8 | Watch execution live (step, URL, countdown, preview); Start / Pause / Resume / Stop | `ui/pages/runner_page.py`, `live_view_page.py` |

@@ -19,19 +19,25 @@ class Environment(StrEnum):
 
 
 class SearchProfile(StrEnum):
-    """Where a scenario's ranking data comes from.
+    """How a scenario finds out where the target site ranks.
 
-    ``GOOGLE`` is the real search engine, read through Google's official
-    Custom Search JSON API. No scenario browses or clicks inside a search
-    engine; the API is the only search source, which is what keeps the safety
-    rules ("never touch a public search engine") intact.
+    ``GOOGLE_BROWSER`` opens Google's own results page in the test browser and
+    reads the position off it: no API key, no quota, and the rank is exactly
+    what this browser was shown. Google's terms of service forbid that kind of
+    automated access, so the page may answer with a captcha instead, and the
+    result can drift between runs.
 
-    A target Google can never list (the bundled loopback sample site) is
-    visited directly and no ranking is claimed for it — see
+    ``GOOGLE_API`` asks the official Custom Search JSON API: permitted and
+    stable, but it needs an API key plus a search-engine id, and its ranking
+    omits personalisation and location.
+
+    Neither is used for a target Google can never list (the bundled loopback
+    sample site), which is visited directly - see
     :meth:`src.automation.plan_factory.PlanFactory.from_scenario`.
     """
 
-    GOOGLE = "GOOGLE"
+    GOOGLE_BROWSER = "GOOGLE_BROWSER"
+    GOOGLE_API = "GOOGLE_API"
 
 
 class ProxyProtocol(StrEnum):

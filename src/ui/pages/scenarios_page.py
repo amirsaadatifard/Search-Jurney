@@ -7,7 +7,7 @@ from functools import partial
 
 from src.database.models import Scenario
 from src.ui.dialogs.scenario_dialog import ScenarioDialog
-from src.ui.formatting import format_datetime
+from src.ui.formatting import format_datetime, search_profile_label
 from src.ui.pages.base_page import PageContext
 from src.ui.pages.crud_page import CrudPage
 from src.ui.widgets.data_table import Column
@@ -42,7 +42,7 @@ class ScenariosPage(CrudPage[Scenario]):
                 Column("Name", lambda s: s.name, stretch=True),
                 Column("Keyword", lambda s: s.keyword, width=190),
                 Column("Target site", lambda s: s.target_site.display_name, width=160),
-                Column("Rank source", lambda s: s.search_profile.name.title(), width=110),
+                Column("Rank source", lambda s: search_profile_label(s.search_profile), width=150),
                 Column("Dwell", _dwell_text, sort_key=lambda s: s.min_dwell_seconds, width=90),
                 Column("Runs", lambda s: str(s.iterations), lambda s: s.iterations, width=70),
                 Column(

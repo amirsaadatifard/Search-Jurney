@@ -300,7 +300,13 @@ class GoogleResearchService:
             )
             if not ok
         ]
-        return HealthCheckResult(name, HealthStatus.ERROR, f"Missing: {', '.join(missing)}")
+        # A journey no longer needs the API to know its ranking, so an absent key
+        # is a limitation of the API channel, not a broken installation.
+        return HealthCheckResult(
+            name,
+            HealthStatus.WARNING,
+            f"Missing: {', '.join(missing)} - only the 'Google API' rank source needs them",
+        )
 
     def _check_provider(self, probe: bool) -> HealthCheckResult:
         name = "Google provider availability"

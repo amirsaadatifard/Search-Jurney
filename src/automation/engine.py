@@ -4,10 +4,14 @@ The session runner (state machine, timeline, dwell loop) is written against this
 interface only. The Playwright implementation lives in ``playwright_engine``;
 tests substitute a fake, so every runner rule is verified without a browser.
 
-The engine opens *pages*; it never searches. Reading the real ranking of a site
-is the job of a search provider
-(:mod:`src.search_providers`), so no browser is ever driven against a search
-engine.
+Two ways of finding a ranking reach this interface:
+
+* the browser channel asks the engine to read Google's results page
+  (:meth:`AutomationEngine.read_search_page`) - one navigation per iteration,
+  and the only page it may open that is not an approved target site;
+* the API channel reads the ranking through a search provider
+  (:mod:`src.search_providers`) before any browser exists, and the engine only
+  opens the target.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from src.automation.interaction_service import ScheduledAction
-from src.automation.models import InteractionOutcome, SessionPlan
+from src.automation.models import InteractionOutcome, SearchPageRead, SessionPlan
 from src.domain.enums import ScreenshotKind
 
 
@@ -41,6 +45,17 @@ class AutomationEngine(ABC):
     @abstractmethod
     async def start_session(self, plan: SessionPlan) -> dict[str, Any]:
         """Launch the browser if needed, open an isolated context and return browser info."""
+
+    @abstractmethod
+    async def read_search_page(self, url: str, limit: int) -> SearchPageRead:
+        """Read a Google results page and return what it shows.
+
+        The one capability that opens a page which is *not* an approved target
+        site, for the browser search channel. Implementations must validate
+        ``url`` through ``DomainSafetyService.check_search_url`` - which accepts
+        nothing but a Google results page - and must not click a result link,
+        scroll, re-query, or try to get past a captcha.
+        """
 
     @abstractmethod
     async def open_url(self, url: str) -> str:

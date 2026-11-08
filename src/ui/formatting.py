@@ -3,19 +3,37 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Final
 
+from src.domain.enums import SearchProfile
 from src.services.timeutil import to_local
 
 PLACEHOLDER = "—"
 
+# How a scenario finds its ranking, in the user's words rather than in enum names.
+SEARCH_PROFILE_LABELS: Final = {
+    SearchProfile.GOOGLE_BROWSER: "Google in the browser",
+    SearchProfile.GOOGLE_API: "Google API",
+}
+
 __all__ = [
     "PLACEHOLDER",
+    "SEARCH_PROFILE_LABELS",
     "format_datetime",
     "format_seconds",
     "format_time",
-    "to_local",
+    "search_profile_label",
     "yes_no",
 ]
+
+
+def search_profile_label(value: SearchProfile | str) -> str:
+    """Label for a stored profile; anything unrecognised says so instead of lying."""
+    try:
+        profile = SearchProfile(value)
+    except ValueError:
+        return "Google API" if str(value) == "GOOGLE" else PLACEHOLDER
+    return SEARCH_PROFILE_LABELS.get(profile, PLACEHOLDER)
 
 
 def format_datetime(value: datetime | None) -> str:

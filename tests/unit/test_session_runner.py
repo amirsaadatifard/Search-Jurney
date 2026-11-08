@@ -18,8 +18,10 @@ import pytest
 
 from src.automation.control import RunControl
 from src.automation.engine import AutomationEngine
+from src.automation.google_search_page import search_url
 from src.automation.interaction_service import ScheduledAction
 from src.automation.models import (
+    MODE_BROWSER,
     MODE_DIRECT,
     MODE_GOOGLE,
     BrowserSettings,
@@ -28,17 +30,30 @@ from src.automation.models import (
     RankObservation,
     ResultItem,
     RunSummary,
+    SearchPageRead,
     SessionPlan,
     SessionResult,
 )
 from src.automation.observer import RunObserver
-from src.automation.rank_observer import RankObserver
+from src.automation.rank_observer import GooglePageRankObserver, RankObserver
 from src.automation.recorder import SessionRecorder
 from src.automation.session_runner import SNAPSHOT_RESULT_LIMIT, SessionRunner
 from src.database.repositories import SessionRepository
 from src.database.session import Database
-from src.domain.enums import EventType, ScreenshotKind, SessionState, SessionStatus
-from src.domain.exceptions import BrowserLaunchError, GoogleQuotaError, NavigationError
+from src.domain.enums import (
+    EventType,
+    ScreenshotKind,
+    SearchProfile,
+    SessionState,
+    SessionStatus,
+)
+from src.domain.exceptions import (
+    BrowserLaunchError,
+    GoogleQuotaError,
+    InvalidConfigurationError,
+    NavigationError,
+    SearchError,
+)
 from src.services.safety_service import AllowedOrigin, DomainSafetyService
 
 TARGET = "https://shop.example/"
@@ -77,7 +92,9 @@ class FakeRankObserver:
     def credentials_ready(self) -> bool:
         return self.error is None
 
-    async def observe(self, plan: SessionPlan) -> RankObservation:
+    async def observe(
+        self, plan: SessionPlan, engine: AutomationEngine | None = None
+    ) -> RankObservation:
         self.calls.append(plan)
         if self.error is not None:
             raise self.error
@@ -102,6 +119,9 @@ class FakeEngine(AutomationEngine):
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.opened: list[str] = []
+        self.search_urls: list[str] = []
+        self.search_items: list[tuple[str, str]] = []
+        self.search_fails: Exception | None = None
         self.fail_at: dict[str, Exception] = {}
         self.hooks: dict[str, Hook] = {}
         self._url = ""
@@ -126,6 +146,16 @@ class FakeEngine(AutomationEngine):
         await self._step("start_session")
         self._open = True
         return {"version": "fake-1.0"}
+
+    async def read_search_page(self, url: str, limit: int) -> SearchPageRead:
+        """Answers with ``search_items``, as the real engine would after one navigation."""
+        await self._step("read_search_page")
+        if self.search_fails is not None:
+            raise self.search_fails
+        self.search_urls.append(url)
+        return SearchPageRead(
+            kind="search", items=tuple(self.search_items[:limit]), page_url=url, text=""
+        )
 
     async def open_url(self, url: str) -> str:
         await self._step("open_url")
@@ -219,6 +249,25 @@ def make_plan(**overrides: Any) -> SessionPlan:
     return SessionPlan(**(values | overrides))
 
 
+def browser_plan(**overrides: Any) -> SessionPlan:
+    """A journey that reads Google's own page in the browser (the key-free channel)."""
+    return make_plan(mode=MODE_BROWSER, **overrides)
+
+
+def listed_items() -> list[tuple[str, str]]:
+    """What the fake page shows, Google's own links included.
+
+    The approved site is the second link a visitor would count: the ad-shaped
+    link on google.com is not a result, so it must not shift the numbering.
+    """
+    return [
+        ("Ads are not results", "https://www.google.com/aclk?ad=1"),
+        ("Ceramic Mug Studio", "https://other.example/mugs"),
+        ("Handmade mugs | Shop", "https://shop.example/handmade-mugs"),
+        ("Mug care", "https://shop.example/blog/care"),
+    ]
+
+
 def direct_plan(**overrides: Any) -> SessionPlan:
     """A plan that skips the ranking step (a Google Research visit, or a local site)."""
     values: dict[str, Any] = {
@@ -249,6 +298,15 @@ class Harness:
 
     def runner(self, observer: RunObserver | None = None) -> SessionRunner:
         return self._runner(observer, self.rank)
+
+    def browser_runner(self) -> SessionRunner:
+        """The runner as the application wires it for the browser channel.
+
+        The real :class:`GooglePageRankObserver` is used here on purpose: the fake
+        engine is the only thing standing in for Chromium, so the parsing, the
+        numbering and the position are the shipped ones.
+        """
+        return self._runner(None, GooglePageRankObserver())
 
     def runner_without_provider(self) -> SessionRunner:
         """A run with no search provider wired in - the misconfiguration to guard against."""
@@ -697,6 +755,133 @@ async def test_revoked_approval_during_dwell_fails_the_session_at_once(database:
     )
 
 
+# -- which channel a plan uses ---------------------------------------------------------- #
+def test_a_stored_profile_decides_the_channel() -> None:
+    from src.automation.plan_factory import search_channel
+
+    assert search_channel(SearchProfile.GOOGLE_BROWSER) == MODE_BROWSER
+    assert search_channel(SearchProfile.GOOGLE_API) == MODE_GOOGLE
+    # A value left by a version that had only one channel means the one with no key.
+    assert search_channel("GOOGLE") == MODE_BROWSER
+
+
+async def test_the_router_refuses_only_the_channel_that_is_not_configured(
+    harness: Harness,
+) -> None:
+    """A run with no API key still runs every browser-channel scenario."""
+    from src.automation.rank_observer import RankObserverRouter
+
+    class NoKey:
+        provider_name = "google-custom-search"
+        credentials_ready = False
+
+    router = RankObserverRouter(NoKey(), GooglePageRankObserver())  # type: ignore[arg-type]
+    router.check([make_plan(mode=MODE_BROWSER), make_plan(mode=MODE_DIRECT)])
+    with pytest.raises(InvalidConfigurationError, match="browser channel"):
+        router.check([make_plan(mode=MODE_GOOGLE)])
+    assert router.credentials_ready is True  # the run as a whole can be done
+
+    empty = RankObserverRouter(None, None)
+    with pytest.raises(InvalidConfigurationError, match="browser engine"):
+        empty.check([make_plan(mode=MODE_BROWSER)])
+
+
+# -- the browser channel: the page is the source ---------------------------------------- #
+async def test_the_browser_channel_reads_the_results_page_before_visiting(harness: Harness) -> None:
+    """One navigation to Google's page, read, then the approved address - as chosen."""
+    harness.engine.search_items = listed_items()
+    summary = await harness.browser_runner().run_plan(browser_plan())
+    assert (summary.completed, summary.failed) == (1, 0)
+
+    assert harness.engine.search_urls == [
+        search_url("handmade ceramic mugs", "en", "us", 10),
+    ]
+    # Google's page is read by the search step alone; open_url never sees it, and the
+    # link the page reported is what the visit uses.
+    assert harness.engine.opened == ["https://shop.example/handmade-mugs"]
+
+    record = harness.sessions()[0]
+    assert (record.target_found, record.target_position, record.results_count) == (True, 2, 3)
+    assert record.settings_snapshot["observed_provider"] == "google-browser"
+
+
+async def test_the_browser_channel_builds_the_query_from_the_plan_settings(
+    harness: Harness,
+) -> None:
+    """Same knobs as the API channel: language, country and the number asked for."""
+    harness.engine.search_items = listed_items()
+    await harness.browser_runner().run_plan(browser_plan(requested_results=100))
+    url = harness.engine.search_urls[0]
+    assert url.startswith("https://www.google.com/search?")
+    assert "hl=en" in url and "gl=us" in url and "num=100" in url
+    assert "q=handmade+ceramic+mugs" in url
+
+
+async def test_the_browser_starts_inside_the_search_step_for_the_browser_channel(
+    harness: Harness,
+) -> None:
+    """The browser is the instrument here, so it exists before the page is read."""
+    harness.engine.search_items = listed_items()
+    await harness.browser_runner().run_plan(browser_plan())
+    states = harness.observer.states
+    assert states.index(SessionState.OPENING_SEARCH) < states.index(SessionState.SEARCHING)
+    assert "start_session" in harness.engine.calls
+    assert harness.engine.calls.index("start_session") < harness.engine.calls.index(
+        "read_search_page"
+    )
+    # STARTING_BROWSER is not announced twice: the visit reuses the open context.
+    assert states.count(SessionState.STARTING_BROWSER) == 0
+    assert EventType.BROWSER_STARTED.value in harness.observer.events
+
+
+async def test_a_site_missing_from_the_page_ends_as_not_found_without_a_screenshot(
+    harness: Harness,
+) -> None:
+    """The finding is the result; Google's page is read, never stored as evidence."""
+    harness.engine.search_items = [("Someone else", "https://elsewhere.example/")]
+    summary = await harness.browser_runner().run_plan(browser_plan())
+    assert summary.target_not_found == 1
+
+    states = harness.observer.states
+    assert states == [
+        SessionState.INITIALIZING,
+        SessionState.OPENING_SEARCH,
+        SessionState.SEARCHING,
+        SessionState.ANALYZING_RESULTS,
+        SessionState.TARGET_NOT_FOUND,
+        SessionState.CAPTURING_RESULT,
+        SessionState.COMPLETED,
+    ]
+    assert "screenshot:session_end" not in harness.engine.calls
+    assert harness.engine.opened == []
+    assert harness.observer.positions == [None]
+
+
+async def test_a_captcha_from_google_fails_the_session_with_its_own_error(
+    harness: Harness,
+) -> None:
+    """No fallback and no workaround: the refusal is what the report shows."""
+    harness.engine.search_fails = SearchError("Google answered with a human check.")
+    summary = await harness.browser_runner().run_plan(browser_plan())
+    assert summary.failed == 1
+    record = harness.sessions()[0]
+    assert record.error_type == "SearchError"
+    assert "human check" in record.error_message
+    assert harness.engine.opened == []
+
+
+async def test_the_api_channel_still_needs_no_browser_for_the_ranking(
+    harness: Harness,
+) -> None:
+    """The two channels stay separate: this one reads a provider, not a page."""
+    summary = await harness.run(make_plan(mode=MODE_GOOGLE))
+    assert summary.completed == 1
+    assert harness.engine.search_urls == []
+    assert harness.engine.calls.count("read_search_page") == 0
+    states = harness.observer.states
+    assert states.index(SessionState.SEARCHING) < states.index(SessionState.STARTING_BROWSER)
+
+
 # -- several iterations --------------------------------------------------------------- #
 async def test_iterations_are_numbered_and_share_a_run_id(harness: Harness) -> None:
     summary = await harness.runner().run_plan(replace(make_plan(iterations=3)), run_id="run-42")
@@ -719,5 +904,5 @@ async def test_a_missing_rank_observer_is_reported_as_a_configuration_problem(
     assert summary.failed == 1
     record = harness.sessions()[0]
     assert record.error_type == "InvalidConfigurationError"
-    assert "search provider" in record.error_message
+    assert "search source" in record.error_message
     assert harness.engine.opened == [] and harness.rank.calls == []

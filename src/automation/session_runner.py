@@ -4,10 +4,15 @@ The runner is written against :class:`AutomationEngine` and owns everything
 that is not browser-specific: ordering (state machine), the event timeline,
 the pausable dwell clock, stop handling, error classification and persistence.
 
-Each iteration starts by asking the search provider where the target site ranks
-(:class:`~src.automation.rank_observer.RankObserver`). The browser is only
-started for a target the real results actually list, so the runner never
-browses a search engine and a site that is not ranked loads no page.
+Each iteration starts by finding out where the target site ranks
+(:class:`~src.automation.rank_observer.RankObserver`), and which way that
+happens is the scenario's choice:
+
+* the API channel asks Google's official search API *before* a browser exists,
+  so a site that is not listed ends the session without loading a page;
+* the browser channel starts Chromium first, because Chromium is what reads
+  Google's results page - one navigation, no clicking, and the tab is blanked
+  again before the journey continues to the approved address.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ DWELL_TICK_SECONDS: Final = 0.25
 PREVIEW_EVERY_TICKS: Final = 4  # about one frame per second while dwelling
 PREVIEW_STATES: Final = frozenset(
     {
+        SessionState.OPENING_SEARCH,
         SessionState.SEARCHING,
         SessionState.ANALYZING_RESULTS,
         SessionState.DWELLING,
@@ -88,6 +94,7 @@ class _Tracker:
         self.rng = rng
         self.machine = machine
         self.target_found: bool | None = None
+        self.browser_started = False
         self.target_position: int | None = None
         self.observed: RankObservation | None = None
         self.planned_dwell: float | None = None
@@ -184,6 +191,18 @@ class SessionRunner:
             await self._execute_direct(t)
             return
 
+        if plan.searches_in_browser:
+            # The browser *is* the instrument of this channel, so it starts before
+            # anything is read - under the search state, not under its own one,
+            # which keeps the progress bar in step for both channels. The tab ends
+            # up parked on a blank page, which is what keeps every scope check,
+            # and every screenshot, clear of Google's own content.
+            await self._go(t, SessionState.OPENING_SEARCH, f"Asking Google for '{plan.keyword}'")
+            # Not under STARTING_BROWSER: the browser belongs to this step, and the
+            # visit afterwards must not look like it started a second one. The
+            # BROWSER_STARTED event is recorded either way.
+            await self._start_browser(t, announce=None)
+
         await self._observe_rank(t)
         if t.target_found is False:
             await self._target_not_found(t)
@@ -191,17 +210,25 @@ class SessionRunner:
         await self._open_observed_target(t)
 
     async def _observe_rank(self, t: _Tracker) -> None:
-        """Ask the search provider where the target ranks; no browser is involved yet."""
+        """Find where the target ranks, through whichever channel the scenario chose."""
         plan = t.plan
         if self._rank_observer is None:
             raise InvalidConfigurationError(
-                "No search provider is configured, so the real ranking cannot be read. "
-                "Set the Google API key and search engine id under Google Research."
+                "No search source is configured, so the real ranking cannot be read. Pick the "
+                "browser channel (no key needed) or set the Google API key and search engine "
+                "id under Google Research."
             )
+        reading_page = plan.searches_in_browser
         await self._go(
-            t, SessionState.SEARCHING, f"Reading the Google results for '{plan.keyword}'"
+            t,
+            SessionState.SEARCHING,
+            (
+                "Reading the results page in the browser"
+                if reading_page
+                else f"Reading the Google results for '{plan.keyword}'"
+            ),
         )
-        observed = await self._rank_observer.observe(plan)
+        observed = await self._rank_observer.observe(plan, self._engine)
         t.observed = observed
         self._recorder.update(
             t.session_id,
@@ -213,7 +240,8 @@ class SessionRunner:
             {
                 "observed_provider": observed.provider,
                 "observed_result_count": observed.result_count,
-                # The first page only; the complete list lives in the observation.
+                # The first page only; on the API channel the full list also lives in
+                # the stored observation, which a browser read does not create.
                 "observed_results": [
                     {"position": item.position, "title": item.title, "url": item.url}
                     for item in observed.results[:SNAPSHOT_RESULT_LIMIT]
@@ -226,6 +254,8 @@ class SessionRunner:
         self._recorder.update(t.session_id, target_found=found, target_position=observed.position)
         self._observer.on_target_position(observed.position)
         where = f"at position {observed.position}" if found else "is not in the results"
+        if reading_page:
+            where += f" (of {observed.result_count} results on the page)"
         self._event(
             t,
             EventType.SEARCH_OBSERVED,
@@ -238,10 +268,22 @@ class SessionRunner:
             },
         )
 
-    async def _start_browser(self, t: _Tracker) -> None:
-        """Open the isolated context the target visit runs in."""
+    async def _start_browser(
+        self, t: _Tracker, announce: SessionState | None = SessionState.STARTING_BROWSER
+    ) -> None:
+        """Open the isolated context the session works in.
+
+        Idempotent: the browser channel needs the context before it can read a
+        results page, and the target visit afterwards must not start a second one.
+        ``announce`` is the state to enter first - ``None`` when the caller is
+        already inside a state of its own.
+        """
+        if t.browser_started:
+            return
+        t.browser_started = True
         engine, plan = self._engine, t.plan
-        await self._go(t, SessionState.STARTING_BROWSER, "Starting the browser")
+        if announce is not None:
+            await self._go(t, announce, "Starting the browser")
         info = await engine.start_session(plan)
         self._recorder.update(t.session_id, browser_info=info)
         note = (
@@ -343,9 +385,11 @@ class SessionRunner:
         await self._open_target(t, plan.target_url)
 
     async def _target_not_found(self, t: _Tracker) -> None:
-        """The provider's real results did not contain the target: a finding, not a failure.
+        """The real results did not contain the target: a finding, not a failure.
 
-        No browser was started, so this branch records the outcome and ends.
+        On the API channel no browser was started at all. On the browser channel
+        the tab holds a blank page - Google's page is read, never stored - so the
+        ranking recorded in the snapshot is the evidence either way.
         """
         await self._go(t, SessionState.TARGET_NOT_FOUND, f"{t.plan.target_domain} is not listed")
         t.target_found = False
@@ -353,7 +397,8 @@ class SessionRunner:
         self._recorder.update(t.session_id, target_found=False)
         self._event(t, EventType.TARGET_NOT_FOUND, t.plan.target_domain)
         await self._go(t, SessionState.CAPTURING_RESULT, "Saving the result")
-        await self._screenshot(t, ScreenshotKind.SESSION_END)
+        if not t.plan.searches_in_browser:
+            await self._screenshot(t, ScreenshotKind.SESSION_END)
         await self._go(t, SessionState.COMPLETED, "Target not found")
         self._event(t, EventType.SESSION_COMPLETED, "Completed: target not found")
 

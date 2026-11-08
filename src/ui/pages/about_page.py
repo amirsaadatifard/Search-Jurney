@@ -31,7 +31,8 @@ _LABEL_BY_STATUS: dict[HealthStatus, str] = {
 }
 _SAFETY_POINTS: tuple[str, ...] = (
     "Automation runs only against localhost and explicitly approved test sites.",
-    "Public search engines are blocked and cannot be added to the allowlist.",
+    "Search engines cannot be added to the allowlist; a scenario that reads Google's own page is "
+    "an explicit, per-scenario choice and asks for one page.",
     "Redirects that leave the approved domain abort the session.",
     "No CAPTCHA solving, fingerprint spoofing, IP rotation or anti-bot evasion is implemented.",
 )

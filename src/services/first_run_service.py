@@ -21,6 +21,13 @@ from src.services.settings_service import SettingKey, SettingsService
 log = get_logger(__name__)
 
 DEMO_SCENARIO_NAME: Final = "Demo - Sample site journey"
+# Kept in one place because ``migrations/versions/0004`` rewrites the same sentence
+# for databases that already have the row; the two must stay word-identical.
+DEMO_SCENARIO_DESCRIPTION: Final = (
+    "Opens the bundled sample website and scrolls through it. Google cannot list a "
+    "loopback address, so this journey claims no ranking; point a scenario at a site "
+    "you own to read its real position from Google's results page in the browser."
+)
 DEMO_SITE_NAME: Final = "Local Demo Site"
 DEMO_BROWSER_NAME: Final = "Default Desktop"
 DEMO_KEYWORD: Final = "handmade ceramic mugs"
@@ -93,11 +100,7 @@ class FirstRunService:
                 scenarios.add(
                     Scenario(
                         name=DEMO_SCENARIO_NAME,
-                        description=(
-                            "Opens the bundled sample website and scrolls through it. Google "
-                            "cannot list a loopback address, so this journey claims no ranking; "
-                            "point a scenario at a site you own to see its real position first."
-                        ),
+                        description=DEMO_SCENARIO_DESCRIPTION,
                         keyword=DEMO_KEYWORD,
                         target_site=site,
                         browser_profile=browser,

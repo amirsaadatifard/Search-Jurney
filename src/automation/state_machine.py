@@ -4,12 +4,14 @@ The happy path is a straight line; ``DWELLING`` and ``INTERACTING`` alternate;
 any active state may fail, be stopped or be paused. Pausing remembers the state
 it interrupted and resuming returns exactly there.
 
-Two shapes exist because the search is no longer browsed. A normal journey asks
-the search provider first (``SEARCHING`` -> ``ANALYZING_RESULTS``) and only then
-starts a browser, so a site that is not ranked costs no page load. A direct
-visit (Google Research mode, or a local site Google cannot list) opens the
-target without a search state. ``OPENING_SEARCH`` and ``ENTERING_KEYWORD``
-remain in the enum for sessions recorded by earlier versions.
+Three shapes exist, because a scenario chooses where its ranking comes from. The
+API channel asks the provider first (``SEARCHING`` -> ``ANALYZING_RESULTS``) and
+only then starts a browser, so a site that is not ranked costs no page load. The
+browser channel starts Chromium as part of ``OPENING_SEARCH`` and reads the
+results page there, so it never reports ``STARTING_BROWSER`` again. A direct visit
+(Google Research mode, or a local site Google cannot list) opens the target with no
+search state. ``ENTERING_KEYWORD`` remains in the enum for sessions recorded by
+earlier versions, and stays legal so those stay readable.
 
 The machine only validates and records transitions. Persisting them and
 notifying the GUI is done by the ``on_change`` callback.
@@ -29,11 +31,16 @@ TERMINAL_STATES: Final = frozenset({S.COMPLETED, S.FAILED, S.STOPPED})
 
 _FORWARD: Final[dict[S, frozenset[S]]] = {
     S.IDLE: frozenset({S.INITIALIZING}),
-    # A journey either asks the search provider first or goes straight to the browser.
-    S.INITIALIZING: frozenset({S.STARTING_BROWSER, S.SEARCHING}),
+    # A journey either reads the results page first (browser channel), asks the
+    # provider first (API channel), or has nothing to ask: a direct visit knows the
+    # target is fine to open (it was observed already, or Google cannot list it), so
+    # it goes straight to TARGET_FOUND.
+    S.INITIALIZING: frozenset({S.STARTING_BROWSER, S.SEARCHING, S.OPENING_SEARCH, S.TARGET_FOUND}),
     # TARGET_FOUND is the shortcut of direct-visit sessions: the target was already observed.
     S.STARTING_BROWSER: frozenset({S.OPENING_SEARCH, S.TARGET_FOUND, S.OPENING_TARGET}),
-    S.OPENING_SEARCH: frozenset({S.ENTERING_KEYWORD}),
+    # The browser channel reads the page it just opened; the old flow typed the
+    # keyword into the box first and stays legal for sessions recorded that way.
+    S.OPENING_SEARCH: frozenset({S.ENTERING_KEYWORD, S.SEARCHING}),
     S.ENTERING_KEYWORD: frozenset({S.SEARCHING}),
     S.SEARCHING: frozenset({S.ANALYZING_RESULTS}),
     S.ANALYZING_RESULTS: frozenset({S.TARGET_FOUND, S.TARGET_NOT_FOUND}),

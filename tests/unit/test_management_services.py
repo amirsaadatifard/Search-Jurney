@@ -62,7 +62,7 @@ def test_scenario_schema_accepts_valid_input_and_applies_defaults() -> None:
     assert values.keyword == "gold ring"
     assert (values.iterations, values.search_profile, values.scroll_enabled) == (
         1,
-        SearchProfile.GOOGLE,
+        SearchProfile.GOOGLE_BROWSER,  # the channel that needs no key is the default
         True,
     )
 
@@ -319,10 +319,16 @@ def test_scenario_create_update_and_relationships(container: AppContainer) -> No
     assert scenario.target_site.display_name == DEMO_SITE_NAME
     assert scenario.browser_profile.name == DEMO_BROWSER_NAME
 
+    # A file exported before the channels existed names "GOOGLE"; that meant the
+    # only way there was, which is now the browser channel.
     updated = service.update(
         scenario.id, scenario_data(container, iterations=7, search_profile="GOOGLE")
     )
-    assert (updated.iterations, updated.search_profile) == (7, SearchProfile.GOOGLE.value)
+    assert (updated.iterations, updated.search_profile) == (7, SearchProfile.GOOGLE_BROWSER.value)
+    updated = service.update(
+        scenario.id, scenario_data(container, iterations=7, search_profile="GOOGLE_API")
+    )
+    assert updated.search_profile is SearchProfile.GOOGLE_API
     assert service.get(scenario.id).iterations == 7
     assert "name" in field_errors(service.create, scenario_data(container))
     assert "name" in field_errors(

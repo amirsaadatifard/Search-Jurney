@@ -12,6 +12,7 @@ rule: it inspects *every* request the page makes and aborts anything the
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final
 from urllib.parse import urlsplit
@@ -63,9 +64,20 @@ class BrowserSession:
     context: BrowserContext
     page: Page
     blocked: list[BlockedRequest] = field(default_factory=list)
+    # The search step sets ``search_scope_open`` around its own navigation and
+    # supplies the predicate; no other request can borrow the exception, because
+    # no other code path turns it on.
+    search_scope_open: bool = False
+    search_allowed: Callable[[str], bool] | None = None
 
     def navigation_violation(self) -> BlockedRequest | None:
         return next((item for item in self.blocked if item.is_navigation), None)
+
+    def allows_search_origin(self, url: str) -> bool:
+        """Whether the results page this session is reading may load ``url``."""
+        if not self.search_scope_open or self.search_allowed is None:
+            return False
+        return self.search_allowed(url)
 
 
 class BrowserManager:
@@ -141,7 +153,7 @@ class BrowserManager:
         context.set_default_timeout(plan.timeout_seconds * MS_PER_SECOND)
         context.set_default_navigation_timeout(plan.timeout_seconds * MS_PER_SECOND)
         page = await context.new_page()
-        session = BrowserSession(context, page)
+        session = BrowserSession(context, page, search_allowed=self._safety.is_search_origin)
         await context.route("**/*", lambda route, request: self._guard(session, route, request))
         page.on("request", lambda request: self._watch(session, request))
         if not plan.incognito:
@@ -194,6 +206,9 @@ class BrowserManager:
         try:
             self._safety.check_url(request.url)
         except SafetyViolationError as exc:
+            if session.allows_search_origin(request.url):
+                await route.continue_()
+                return
             blocked = BlockedRequest(request.url, request.is_navigation_request(), exc.message)
             session.blocked.append(blocked)
             log.warning("request_blocked", url=request.url, navigation=blocked.is_navigation)
@@ -215,6 +230,8 @@ class BrowserManager:
         try:
             self._safety.check_url(request.url)
         except SafetyViolationError as exc:
+            if session.allows_search_origin(request.url):
+                return  # a consent hop on the way to the results page is not a violation
             root = request
             while root.redirected_from is not None:
                 root = root.redirected_from

@@ -5,6 +5,10 @@ with :class:`tests.helpers.fake_google.FakeGoogleServer` - a local double of the
 Custom Search JSON API that speaks the documented response format. Everything
 else is the real thing: the HTTP client, the ranking service that stores the
 observation, the safety service, Chromium, the sample website and the database.
+
+The scenarios here select ``GOOGLE_API`` on purpose. The other channel reads
+google.com itself, which no test may do; its own rules are covered offline by
+``tests/unit/test_google_search_page.py`` and ``tests/unit/test_search_page_actions.py``.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from typing import Any
 import pytest
 
 from src.app.container import AppContainer
-from src.domain.enums import Environment
+from src.domain.enums import Environment, SearchProfile
 from src.domain.schemas import BrowserProfileInput, ScenarioInput
 from tests.helpers.fake_google import VALID_CX, VALID_KEY, FakeGoogleServer, result_item
 
@@ -80,6 +84,9 @@ def app(
     fake_google.state.items = catalogue(f"{container.servers.target.url}/", position=4)
     configure(
         container,
+        # The double stands in for the API, so the scenario asks the API. Reading a
+        # real Google page is never part of a test run.
+        search_profile=SearchProfile.GOOGLE_API,
         target_site_id=listed_site.id,
         min_dwell_seconds=1,
         max_dwell_seconds=2,

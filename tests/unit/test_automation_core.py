@@ -155,6 +155,7 @@ def test_pause_and_finish_require_a_started_session() -> None:
 
 
 def test_allowed_from_matches_documentation() -> None:
+    """The sets docs/AUTOMATION_ENGINE.md describes as the three journeys, exactly."""
     assert SessionStateMachine.allowed_from(S.ANALYZING_RESULTS) == {
         S.TARGET_FOUND,
         S.TARGET_NOT_FOUND,
@@ -162,9 +163,16 @@ def test_allowed_from_matches_documentation() -> None:
         S.STOPPED,
     }
     assert SessionStateMachine.allowed_from(S.INITIALIZING) == {
-        S.STARTING_BROWSER,
+        S.OPENING_SEARCH,  # browser channel: read the page first
+        S.SEARCHING,  # API channel: ask the provider first
+        S.TARGET_FOUND,  # direct visit: nothing to ask
+        S.STARTING_BROWSER,  # a session with no search step at all
+        S.FAILED,
+        S.STOPPED,
+    }
+    assert SessionStateMachine.allowed_from(S.OPENING_SEARCH) == {
         S.SEARCHING,
-        S.TARGET_NOT_FOUND,
+        S.ENTERING_KEYWORD,
         S.FAILED,
         S.STOPPED,
     }
@@ -333,6 +341,33 @@ def test_fence_without_origins_blocks_everything() -> None:
     from src.automation.network_fence import fence_arguments
 
     assert fence_arguments([])[1] == "--proxy-bypass-list=<-loopback>"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # the browser channel: Chromium reads the results page, then the visit
+        [S.INITIALIZING, S.OPENING_SEARCH, S.SEARCHING, S.ANALYZING_RESULTS, S.TARGET_FOUND],
+        # ... and the same journey when the site is not on the page
+        [
+            S.INITIALIZING,
+            S.OPENING_SEARCH,
+            S.SEARCHING,
+            S.ANALYZING_RESULTS,
+            S.TARGET_NOT_FOUND,
+            S.CAPTURING_RESULT,
+            S.COMPLETED,
+        ],
+        # the API channel: the provider answers before a browser exists
+        [S.INITIALIZING, S.SEARCHING, S.ANALYZING_RESULTS, S.TARGET_FOUND, S.STARTING_BROWSER],
+        # a direct visit: the shortcut is INITIALIZING -> TARGET_FOUND, not a browser step
+        [S.INITIALIZING, S.TARGET_FOUND, S.STARTING_BROWSER, S.OPENING_TARGET],
+    ],
+)
+def test_each_channel_is_a_legal_path(path: list[S]) -> None:
+    machine = SessionStateMachine()
+    advance(machine, *path)
+    assert machine.state is path[-1]
 
 
 def test_direct_visit_shortcut_is_a_legal_transition() -> None:
