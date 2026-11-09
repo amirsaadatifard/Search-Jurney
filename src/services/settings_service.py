@@ -9,6 +9,7 @@ from typing import Any, Final
 
 from src.app.constants import (
     DEFAULT_MAX_DWELL_SECONDS,
+    DEFAULT_MAX_SEARCH_PAGES,
     DEFAULT_MIN_DWELL_SECONDS,
     DEFAULT_SEARCH_RESULTS,
     DEFAULT_TIMEOUT_SECONDS,
@@ -26,6 +27,8 @@ MAX_DWELL: Final = 3600
 MIN_TIMEOUT: Final = 5
 MAX_TIMEOUT: Final = 300
 MIN_REQUESTED_RESULTS: Final = 10  # Google returns results in pages of ten
+MIN_SEARCH_PAGES: Final = 1
+MAX_SEARCH_PAGES: Final = 10
 _LANGUAGE_PATTERN: Final = re.compile(r"^[a-z]{2,3}(-[A-Z][a-z]{1,3})?$")
 _COUNTRY_PATTERN: Final = re.compile(r"^[A-Z]{2}$")
 
@@ -43,6 +46,7 @@ class SettingKey:
     SEARCH_LANGUAGE: Final = "search.language"
     SEARCH_COUNTRY: Final = "search.country"
     SEARCH_RESULTS: Final = "search.results_per_query"
+    SEARCH_MAX_PAGES: Final = "search.max_result_pages"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,10 +64,11 @@ class AutomationDefaults:
         }
     )
     max_concurrent_sessions: int = MAX_CONCURRENT_SESSIONS  # fixed at 1; kept for future pools
-    # How every scenario asks Google for the ranking of its target site.
+    # How every scenario searches Google in the browser for its target site.
     search_language: str = ""  # empty = the interface language Google picks for this IP
     search_country: str = ""  # empty = no country boost
     requested_results: int = DEFAULT_SEARCH_RESULTS
+    max_search_pages: int = DEFAULT_MAX_SEARCH_PAGES
 
     def validate(self) -> None:
         """Raise :class:`InvalidConfigurationError` with a message per bad field."""
@@ -78,8 +83,12 @@ class AutomationDefaults:
             errors["timeout_seconds"] = f"Use {MIN_TIMEOUT} to {MAX_TIMEOUT} seconds."
         if not MIN_REQUESTED_RESULTS <= self.requested_results <= MAX_SEARCH_RESULTS:
             errors["requested_results"] = (
-                f"The search API returns between {MIN_REQUESTED_RESULTS} and "
-                f"{MAX_SEARCH_RESULTS} results per query."
+                f"A results page holds between {MIN_REQUESTED_RESULTS} and "
+                f"{MAX_SEARCH_RESULTS} links."
+            )
+        if not MIN_SEARCH_PAGES <= self.max_search_pages <= MAX_SEARCH_PAGES:
+            errors["max_search_pages"] = (
+                f"Walk between {MIN_SEARCH_PAGES} and {MAX_SEARCH_PAGES} result pages."
             )
         language = self.search_language.strip()
         if language and not _LANGUAGE_PATTERN.fullmatch(language):
@@ -142,6 +151,7 @@ class SettingsService:
             search_language=text(SettingKey.SEARCH_LANGUAGE, base.search_language).lower(),
             search_country=text(SettingKey.SEARCH_COUNTRY, base.search_country).upper(),
             requested_results=number(SettingKey.SEARCH_RESULTS, base.requested_results),
+            max_search_pages=number(SettingKey.SEARCH_MAX_PAGES, base.max_search_pages),
         )
 
     def save_automation_defaults(self, defaults: AutomationDefaults) -> None:
@@ -153,6 +163,7 @@ class SettingsService:
         self.set(SettingKey.SEARCH_LANGUAGE, defaults.search_language.lower())
         self.set(SettingKey.SEARCH_COUNTRY, defaults.search_country.upper())
         self.set(SettingKey.SEARCH_RESULTS, defaults.requested_results)
+        self.set(SettingKey.SEARCH_MAX_PAGES, defaults.max_search_pages)
 
     def all(self) -> dict[str, Any]:
         """Return every stored setting, decoded. Corrupt entries are skipped."""

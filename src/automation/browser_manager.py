@@ -116,9 +116,18 @@ class BrowserManager:
             launch_args["args"].append("--proxy-bypass-list=<-loopback>")
             self._fence_active = False  # one proxy setting cannot serve both purposes
         else:
-            origins = [
-                AllowedOrigin.from_url(normalize_url(url)) for url in (plan.target_url,) if url
-            ]
+            extra: list[AllowedOrigin] = []
+            urls = [plan.target_url]
+            if plan.searches_in_browser:
+                # The journey browses Google's own pages, so the fence has to let them
+                # through as well - otherwise Chromium cannot even load a results page
+                # and every search journey dies with a proxy error. The list is the
+                # same one the request guard narrows again per URL; it is added for
+                # the whole run rather than per step because Chromium's arguments are
+                # fixed at launch, and the guard is what keeps the scope honest.
+                extra = list(self._safety.search_origins())
+            origins = [AllowedOrigin.from_url(normalize_url(url)) for url in urls if url]
+            origins.extend(extra)
             launch_args["args"].extend(fence_arguments(origins))
             self._fence_active = True
         try:
@@ -203,12 +212,14 @@ class BrowserManager:
         if scheme not in _NETWORK_SCHEMES:
             await route.continue_()
             return
+        if session.allows_search_origin(request.url):
+            # Checked first on purpose: asking check_url() first would log a refusal
+            # that is not one, and a debug console full of noise is worse than none.
+            await route.continue_()
+            return
         try:
             self._safety.check_url(request.url)
         except SafetyViolationError as exc:
-            if session.allows_search_origin(request.url):
-                await route.continue_()
-                return
             blocked = BlockedRequest(request.url, request.is_navigation_request(), exc.message)
             session.blocked.append(blocked)
             log.warning("request_blocked", url=request.url, navigation=blocked.is_navigation)
@@ -227,11 +238,11 @@ class BrowserManager:
         """
         if request.redirected_from is None or urlsplit(request.url).scheme not in _NETWORK_SCHEMES:
             return
+        if session.allows_search_origin(request.url):
+            return  # a consent or paging hop inside the search scope is not a violation
         try:
             self._safety.check_url(request.url)
         except SafetyViolationError as exc:
-            if session.allows_search_origin(request.url):
-                return  # a consent hop on the way to the results page is not a violation
             root = request
             while root.redirected_from is not None:
                 root = root.redirected_from

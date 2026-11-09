@@ -5,8 +5,8 @@ The suite has three levels. Each level exists because the one below cannot prove
 | Level | Folder | What it uses | What it proves |
 | --- | --- | --- | --- |
 | Unit | `tests/unit/` | Pure code, in-memory or temporary SQLite, fake engine, Qt **offscreen** | Rules and logic: validation, safety, state machine, metrics, repositories, services, widgets and pages |
-| Integration | `tests/integration/` | Real SQLite files, real Alembic, real servers on loopback | Layers working together: migrations match the models, the sample site and the search-API double behave over real sockets |
-| End-to-end | `tests/e2e/` | **Real Chromium** (headless), the sample site, a local double of the Google search API, the real database, the real GUI | The product works: full journeys, ranking read from real-shaped API data, pause/stop, safety blocking, proxy mode, the demo |
+| Integration | `tests/integration/` | Real SQLite files, real Alembic, real servers on loopback | Layers working together: migrations match the models, the sample site and the Google-page double behave over real sockets |
+| End-to-end | `tests/e2e/` | **Real Chromium** (headless), the sample site, a local double of Google's result pages, the real database, the real GUI | The product works: full journeys that search, walk pages and click a result, pause/stop, safety blocking, proxy mode, the demo |
 
 Qt tests use the `offscreen` platform (set in `tests/conftest.py`), so no window ever opens on your
 desktop. All tests write to temporary folders; none touches your real data, `.env` or credentials
@@ -42,18 +42,20 @@ The project brief required tests for the areas below; each maps to files here.
 | Repositories | `unit/test_repositories.py`, `integration/test_migrations.py` |
 | Report calculations | `unit/test_reports.py` (metrics with hand-computed numbers, filters, exporters) |
 | Sample website and server manager | `integration/test_local_servers.py` |
-| Search API client and ranking | `unit/test_google_research.py` against a local double of the API (`tests/helpers/fake_google.py`) |
-| Ranking step of a journey | `unit/test_session_runner.py` (fake rank observer, and the real page reader against a fake engine) and `e2e/test_automation_e2e.py` (the real HTTP double) |
+| The walk over result pages | `unit/test_search_walk.py` (the rule of the walk: positions across pages, when to stop, what a refusal means) |
+| Ranking step of a journey | `unit/test_session_runner.py` (a fake engine that answers page by page, so the states, events and observations are the real ones) and `e2e/test_automation_e2e.py` (the real HTTP double) |
 | Reading Google's page | `unit/test_google_search_page.py` (query URL, page classification, result numbering) and `unit/test_search_page_actions.py` (navigation, consent, captcha, blanking - a fake Playwright page, never google.com) |
 | The search scope's limits | `unit/test_safety_service.py` (`check_search_url`, `is_search_origin`, the fence's added origins) |
 | Target discovery | `integration/test_local_servers.py`, `unit/test_session_runner.py`, `e2e/` (positions 1, 4, 7, 10 and not listed) |
 | Session state machine | `unit/test_automation_core.py` (every legal and illegal transition), `unit/test_session_runner.py` |
 | Configuration import/export | `unit/test_phase10_services.py` |
-| End-to-end journey (real Chromium + the API double) | `e2e/test_automation_e2e.py`, `e2e/test_runner_ui_e2e.py`, `e2e/test_demo_e2e.py` |
+| End-to-end journey (real Chromium + the page double) | `e2e/test_automation_e2e.py`, `e2e/test_runner_ui_e2e.py`, `e2e/test_demo_e2e.py` |
 
-The e2e journeys never need Google credentials or the internet: `tests/helpers/fake_google.py` answers in
-Google's documented response format over a loopback socket, so the shipped HTTP client, the ranking
-service, the observation tables and the allowlist all run for real. The demo scenario keeps pointing at
+The e2e journeys never need Google credentials or the internet: `tests/helpers/fake_google_page.py` serves
+Google-shaped result pages - `#rso`, `div.g`, `h3` + link, a `#pnnext` control, a consent wall, a refusal -
+over a loopback socket, so the shipped page reader, the walk, the click, the observation tables and the
+allowlist all run for real. The search step's entry page is configuration, not a constant: pointing it at
+the double is the whole substitution, which is why no test asks Google anything. The demo scenario keeps pointing at
 the *local* sample site, which is exactly the case that needs no search query at all - that is what makes
 "it works on the first start" testable offline.
 

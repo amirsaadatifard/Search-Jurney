@@ -52,23 +52,6 @@ class SafetyViolationError(AppError):
     """Automation was asked to touch a URL outside the approved scope."""
 
 
-# -- search provider (Google) ----------------------------------------------------- #
-class GoogleSearchError(AppError):
-    """The search provider answered with something that is not a usable result."""
-
-
-class GoogleAuthenticationError(GoogleSearchError):
-    """The API key or search-engine id is missing, wrong, or not allowed to search."""
-
-
-class GoogleQuotaError(GoogleSearchError):
-    """The daily or per-minute quota of the search API is used up."""
-
-
-class GoogleNetworkError(GoogleSearchError):
-    """The search provider could not be reached (no internet, DNS, timeout)."""
-
-
 # -- automation ---------------------------------------------------------------- #
 class AutomationError(AppError):
     """Base class for failures while executing a session."""
@@ -83,13 +66,12 @@ class NavigationError(AutomationError):
 
 
 class SearchError(AutomationError):
-    """Google's results page could not be read in the browser.
+    """The search step could not read a results page.
 
-    The browser channel has no fallback: the error says what Google answered
-    (a consent screen it would not click, a captcha, a page it no longer
-    recognises) so the user knows whether to retry later or switch the
-    scenario to the API channel.
-    """
+    There is no fallback: the error says what the search engine answered (a
+    consent screen it would not click, a captcha, a page it no longer
+    recognises, a browser failure) so the user can tell "try again later" from
+    "this keyword will never be listed"."""
 
 
 class TargetNotFoundError(AutomationError):

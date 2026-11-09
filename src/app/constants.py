@@ -35,13 +35,14 @@ UI_LOG_BUFFER_SIZE: Final = 2000
 
 # Automation defaults ------------------------------------------------------ #
 DEFAULT_MIN_DWELL_SECONDS: Final = 5
-DEFAULT_MAX_DWELL_SECONDS: Final = 15
+DEFAULT_MAX_DWELL_SECONDS: Final = 20  # a visit lasts five to twenty seconds
 DEFAULT_TIMEOUT_SECONDS: Final = 30
 MAX_CONCURRENT_SESSIONS: Final = 1
 
-# Search provider (Google Custom Search JSON API) --------------------------- #
-DEFAULT_SEARCH_RESULTS: Final = 10  # the API returns at most ten results per page
-MAX_SEARCH_RESULTS: Final = 100  # and never more than one hundred for one query
+# The search step (Google's own result pages) -------------------------------- #
+DEFAULT_SEARCH_RESULTS: Final = 10  # one page of results, the way Google shows it
+MAX_SEARCH_RESULTS: Final = 100  # Google's own ceiling for a page
+DEFAULT_MAX_SEARCH_PAGES: Final = 5  # how far a journey walks for its site
 
 # Main window -------------------------------------------------------------- #
 WINDOW_MIN_WIDTH: Final = 1180

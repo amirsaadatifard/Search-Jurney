@@ -25,7 +25,6 @@ from src.ui.pages.about_page import AboutPage
 from src.ui.pages.base_page import BasePage, PageContext
 from src.ui.pages.browser_profiles_page import BrowserProfilesPage
 from src.ui.pages.dashboard_page import DashboardPage
-from src.ui.pages.google_research_page import GoogleResearchPage
 from src.ui.pages.keywords_page import KeywordsPage
 from src.ui.pages.live_view_page import LiveViewPage
 from src.ui.pages.logs_page import LogsPage
@@ -53,7 +52,6 @@ PAGE_FACTORIES: dict[PageKey, PageFactory] = {
     PageKey.TARGETS: TargetsPage,
     PageKey.PROXIES: ProxiesPage,
     PageKey.BROWSER_PROFILES: BrowserProfilesPage,
-    PageKey.GOOGLE_RESEARCH: GoogleResearchPage,
     PageKey.RUNNER: RunnerPage,
     PageKey.LIVE_VIEW: LiveViewPage,
     PageKey.SESSIONS: SessionsPage,

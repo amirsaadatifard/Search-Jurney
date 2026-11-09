@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from src.app.container import AppContainer
-from src.domain.enums import Environment, SearchProfile
+from src.domain.enums import Environment
 from src.domain.exceptions import EntityInUseError, EntityNotFoundError, InvalidConfigurationError
 from src.domain.schemas import (
     BrowserProfileInput,
@@ -60,11 +60,8 @@ def test_scenario_schema_accepts_valid_input_and_applies_defaults() -> None:
     )
     assert values.name == "My scenario"
     assert values.keyword == "gold ring"
-    assert (values.iterations, values.search_profile, values.scroll_enabled) == (
-        1,
-        SearchProfile.GOOGLE_BROWSER,  # the channel that needs no key is the default
-        True,
-    )
+    # One iteration and a scroll: the defaults a journey is built from today.
+    assert (values.iterations, values.min_dwell_seconds, values.scroll_enabled) == (1, 5, True)
 
 
 @pytest.mark.parametrize(
@@ -82,7 +79,6 @@ def test_scenario_schema_accepts_valid_input_and_applies_defaults() -> None:
         ({"delay_between_iterations": -1}, "delay_between_iterations"),
         ({"max_scroll_actions": 500}, "max_scroll_actions"),
         ({"target_site_id": None}, "target_site_id"),
-        ({"search_profile": "LOCAL_SIMULATOR"}, "search_profile"),  # the removed value is refused
         ({"unknown_field": 1}, "unknown_field"),
     ],
 )
@@ -319,16 +315,8 @@ def test_scenario_create_update_and_relationships(container: AppContainer) -> No
     assert scenario.target_site.display_name == DEMO_SITE_NAME
     assert scenario.browser_profile.name == DEMO_BROWSER_NAME
 
-    # A file exported before the channels existed names "GOOGLE"; that meant the
-    # only way there was, which is now the browser channel.
-    updated = service.update(
-        scenario.id, scenario_data(container, iterations=7, search_profile="GOOGLE")
-    )
-    assert (updated.iterations, updated.search_profile) == (7, SearchProfile.GOOGLE_BROWSER.value)
-    updated = service.update(
-        scenario.id, scenario_data(container, iterations=7, search_profile="GOOGLE_API")
-    )
-    assert updated.search_profile is SearchProfile.GOOGLE_API
+    updated = service.update(scenario.id, scenario_data(container, iterations=7))
+    assert updated.iterations == 7
     assert service.get(scenario.id).iterations == 7
     assert "name" in field_errors(service.create, scenario_data(container))
     assert "name" in field_errors(

@@ -56,23 +56,36 @@ def container(app_paths: AppPaths) -> Iterator[AppContainer]:
 
 @pytest.fixture
 def fake_google() -> Iterator[Any]:
-    """Local test double of Google's search API (see tests/helpers/fake_google.py)."""
-    from tests.helpers.fake_google import FakeGoogleServer
+    """Google-shaped pages on the loopback interface (see tests/helpers/fake_google_page.py).
 
-    server = FakeGoogleServer()
-    yield server
-    server.stop()
+    The search step of a journey browses this instead of google.com, so the whole
+    suite runs offline: no key, no quota, and nothing asked of Google.
+    """
+    from tests.helpers.fake_google_page import FakeGooglePages
+
+    server = FakeGooglePages()
+    try:
+        yield server
+    finally:
+        server.stop()
 
 
 @pytest.fixture
-def google_container(app_paths: AppPaths, fake_google: Any) -> Iterator[AppContainer]:
-    """Application whose Google provider talks to the local test double."""
+def search_container(app_paths: AppPaths, fake_google: Any) -> Iterator[AppContainer]:
+    """Application whose search step browses the local double instead of Google.
+
+    This is the whole test seam: the origin a journey may open is a configuration
+    value, so a journey runs against pages on this machine while every other rule -
+    the allowlist, the fence, the redirect check - stays exactly as it ships.
+    """
+    from src.services.safety_service import SearchScope
+
     config = AppConfig(data_dir=app_paths.data_dir, target_port=18766)
     instance = bootstrap(
         config=config,
         paths=app_paths,
         credentials=InMemoryCredentialStore(),
-        google_endpoint=fake_google.endpoint,
+        search_scope=SearchScope(**fake_google.scope()),
     )
     yield instance
     shutdown(instance)

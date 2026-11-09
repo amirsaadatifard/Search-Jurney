@@ -1,32 +1,36 @@
 # Automation engine
 
 The engine runs a scenario as a series of *sessions* (one per iteration). Each session follows the same
-journey, and the first step of that journey is a *read*, not a click:
+journey, and the journey is a search:
 
 ```
-find where the target ranks → listed?  no → record "not listed", finish
-                    ↓ yes
-open the target URL directly → dwell (scroll / visit pages) → screenshot → finish
+type the keyword into Google → read the result page → target listed?
+        ↑                            │ no, pages left → click "next" and read again
+        │                            │ no, pages out → record "not listed", finish
+        └── PAGINATING_RESULTS       └ yes → click that result
+                                     → dwell (scroll / visit pages) → screenshot → finish
 ```
 
-Two channels answer the first step and `src/automation/rank_observer.py` routes between them:
-`GooglePageRankObserver` reads Google's results page in the browser itself (the scenario's default, no
-key), `GoogleRankObserver` asks the official Custom Search JSON API. Neither clicks a result: the page is
-read, the tab is blanked again, and the visit goes to the *approved address* of the site
-(`src/automation/google_search_page.py` holds the URL builder, the page classification and the numbering
-rules; `search_actions.py` is the only Playwright code that touches Google). A journey whose target Google
-cannot list (the bundled sample website, a private host) skips the ranking step and is recorded as a
-direct visit with no position claimed.
+The ranking is read out of the page the browser is looking at, and the visit follows the page's own link —
+there is no second source of positions and no API key. `src/automation/google_search_page.py` holds the
+page knowledge (which address is which kind of page, how its result links are numbered, what a refusal
+looks like); `search_actions.py` is the only Playwright code that opens a search engine; `search_walk.py`
+decides when to stop walking and what to click; `search_journal.py` writes what Google showed to the
+database. A journey whose target Google cannot list (the bundled sample website, a private host) skips the
+search step and is recorded as a *direct visit* with no position claimed: `plan_factory.py` chooses
+`MODE_DIRECT` for those, and `MODE_BROWSER` for everything else.
 
 ## Layers
 
 | Module (`src/automation/`) | Responsibility |
 | --- | --- |
 | `models.py` | `SessionPlan` (immutable copy of a scenario), `RankObservation`, results, summaries |
-| `plan_factory.py` | Builds a plan from a stored scenario and the settings, and chooses its mode (`browser` / `google` / `direct`) |
-| `rank_observer.py` | The two rank sources and the router that picks one per plan |
-| `google_search_page.py` | Pure logic of the browser channel: query URL, page classification, result numbering |
-| `search_actions.py` | The one navigation to Google's results page: read the links, answer consent, blank the tab |
+| `plan_factory.py` | Builds a plan from a stored scenario and the settings, and chooses its mode (`browser` / `direct`) |
+| `google_search_page.py` | Page knowledge, no browser: query URL, page classification, result numbering, `SearchSite` |
+| `search_actions.py` | The only code that opens a search engine: consent wall, typing the keyword, reading links, next page, the click |
+| `search_walk.py` | The rule of the walk: read, look for the target, page on until it turns up or the pages run out |
+| `search_journal.py` | Stores what Google showed as an observation, so a claim of rank can be audited |
+| `target_matching.py` | Domain normalisation and "is this result the approved site?", shared by the walk and the dwell |
 | `engine.py` | `AutomationEngine`: the abstract browser backend |
 | `playwright_engine.py` | Chromium implementation, composed of the services below |
 | `browser_manager.py` | Browser/context lifecycle, request guard, redirect watcher |
@@ -48,22 +52,26 @@ end-to-end tests then run the same runner against real Chromium.
 
 Every session begins `IDLE → INITIALIZING`, ends in `COMPLETED | FAILED | STOPPED`, and any active state
 may be interrupted by `PAUSED` (resuming returns to the interrupted state) or by `FAILED` / `STOPPED`.
-What lies between them is the scenario's channel:
+What lies between them is the journey's shape:
 
-- **API channel** - `SEARCHING → ANALYZING_RESULTS → TARGET_FOUND → STARTING_BROWSER → OPENING_TARGET →
-  DWELLING ⇄ INTERACTING → CAPTURING_RESULT`, or `… → TARGET_NOT_FOUND → CAPTURING_RESULT` when the site
-  is not listed; no browser is ever started for that second outcome.
-- **Browser channel** - `OPENING_SEARCH → SEARCHING → ANALYZING_RESULTS →` the same tail. `OPENING_SEARCH`
-  is the read of Google's results page, and Chromium is started inside that state: the browser is the
-  instrument here, so no separate `STARTING_BROWSER` step follows (the `BROWSER_STARTED` event is still
-  recorded).
+- **Search journey** (every scenario whose target is a real, indexable site) -
+  `OPENING_SEARCH → ENTERING_KEYWORD → SEARCHING ⇄ PAGINATING_RESULTS → ANALYZING_RESULTS → TARGET_FOUND →
+  CLICKING_RESULT → OPENING_TARGET → DWELLING ⇄ INTERACTING → CAPTURING_RESULT`, or
+  `… → TARGET_NOT_FOUND → CAPTURING_RESULT` when the site was never listed; a session that ends that way
+  closes its browser without ever navigating to a target.
 - **Direct visit** - `TARGET_FOUND → STARTING_BROWSER → OPENING_TARGET → …`: nothing to ask Google about,
-  because the ranking was already observed on the Google Research page or because Google cannot list the
-  site at all.
+  because Google cannot list the site at all (a loopback or private address).
 
-`SEARCHING` is the query (page or API) and `ANALYZING_RESULTS` the domain match against its answer.
-`ENTERING_KEYWORD` is legal but unused: it belongs to sessions recorded when the project typed into a
-local results page, and old rows stay readable.
+`SEARCHING` is the state a result page is read in, and it is entered once per page: the walk
+`SEARCHING → PAGINATING_RESULTS → SEARCHING` is what "look on the next page too" means to the state
+machine. `ANALYZING_RESULTS` is the domain match against the page just read, and `CLICKING_RESULT` the
+click on the target's own result - the visit *is* that click, so `OPENING_TARGET` only confirms where the
+tab ended up. Chromium is started inside `OPENING_SEARCH`: the browser is the instrument of the whole
+step, so no separate `STARTING_BROWSER` state follows it (the `BROWSER_STARTED` event is still recorded).
+
+Sessions recorded before the walk existed are still readable, and the machine keeps the edges they used:
+`INITIALIZING → SEARCHING` and `TARGET_FOUND → STARTING_BROWSER` (a ranking that came from an API answer,
+with no page open) and `ENTERING_KEYWORD` on its own. Old rows stay honest; nothing new takes those routes.
 
 Illegal transitions raise `InvalidStateTransitionError`. Every transition updates the session row, so
 the database always shows the current state; each timeline event also records the state it happened in.
@@ -102,9 +110,10 @@ would fail the same way; a stop ends it by request.
 | Situation | Exception | Result |
 | --- | --- | --- |
 | Chromium missing / cannot launch | `BrowserLaunchError` | Session failed, run aborted |
-| Google key / engine id missing or rejected | `GoogleAuthenticationError` | Session failed (never falls back to invented data) |
-| Google quota used up | `GoogleQuotaError` | Session failed, run continues |
-| Google unreachable or answers badly | `GoogleNetworkError`, `GoogleSearchError` | Session failed |
+| Google refuses the search (captcha, unusual traffic) | `SearchError` | Session failed, with the page's own reason |
+| The tab is not on a results page after the keyword was typed | `SearchError` (`kind=other`) | Session failed |
+| The results page cannot be read | `SearchError` | Session failed |
+| Navigation refused by the safety guard | `SafetyViolationError` | Session failed, `SAFETY_BLOCKED` event |
 | Page does not load | `NavigationError` | Session failed |
 | Step exceeds the configured timeout | `AutomationTimeoutError` | Session failed |
 | URL outside the approved scope | `SafetyViolationError` | Session failed, `SAFETY_BLOCKED` event |
@@ -153,9 +162,12 @@ opens the real Chromium window.
   requests the guard blocked), which the Playwright lifecycle and the timeline need.
 - The runner records domain events (`SEARCH_OBSERVED`, `TARGET_FOUND`, ...) rather than one event per
   state change; the state is stored on each event and on the session row.
-- `AutomationRunService.start_plans()` refuses a run whose journeys need the search provider while its
-  credentials are missing, instead of letting the first iteration fail: the answer is the same either
-  way, but a run that never started leaves no half-written session behind.
+- `AutomationRunService.start_plans()` refuses a run whose journeys cannot search at all (a build with no
+  search step wired in) instead of letting the first iteration fail: the answer is the same either way, but
+  a run that never started leaves no half-written session behind.
+- The search step takes its entry page from the safety service's `SearchScope` rather than naming
+  `google.com` itself. One configuration says where a journey searches, so a test can point the whole
+  search step at a local double and every other rule still applies unchanged.
 
 ## Known limitations
 

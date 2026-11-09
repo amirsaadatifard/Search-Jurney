@@ -126,7 +126,7 @@ class LocalServerManager:
     """Owns the bundled sample website (a safe site to visit, never a search source).
 
     Search results do not come from a local server any more: they come from the
-    real Google API (:mod:`src.search_providers`), so the only server the
+    real Google results page (:mod:`src.automation`), so the only server the
     application still needs is the sample site the demo journeys open.
     """
 

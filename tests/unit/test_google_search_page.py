@@ -30,14 +30,20 @@ def item(position: int, url: str, title: str = "") -> tuple[str, str]:
 # -- what the channel asks for -------------------------------------------------- #
 def test_the_query_url_is_one_page_on_google_with_the_plan_settings() -> None:
     assert search_url("handmade ceramic mugs", "en", "us", 10) == (
-        f"{SEARCH}?gl=us&hl=en&num=10&q=handmade+ceramic+mugs"
+        f"{SEARCH}?gl=us&hl=en&q=handmade+ceramic+mugs"
     )
 
 
 def test_blank_settings_are_left_out_rather_than_sent_empty() -> None:
+    """A parameter is sent when it asks for something, not to restate the default.
+
+    Google's page size is 10 whether or not ``num`` is in the URL, and no ``hl``
+    or ``gl`` means "the browser's own", which a bare parameter would override.
+    """
     url = search_url("gold ring")
-    assert url == f"{SEARCH}?num=10&q=gold+ring"
-    assert "hl=" not in url and "gl=" not in url
+    assert url == f"{SEARCH}?q=gold+ring"
+    assert "hl=" not in url and "gl=" not in url and "num=" not in url
+    assert search_url("gold ring", count=20) == f"{SEARCH}?num=20&q=gold+ring"
 
 
 def test_the_keyword_is_trimmed_and_a_page_never_asked_for_more_than_google_shows() -> None:

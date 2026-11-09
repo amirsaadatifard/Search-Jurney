@@ -24,30 +24,33 @@ from src.domain.enums import ScreenshotKind
 from src.domain.enums import SessionState as S
 from src.domain.exceptions import InvalidStateTransitionError, SessionCancelledError
 
-# The journey of a scenario whose ranking is read from the search provider.
+# What a journey does today: the browser opens Google, types the keyword, reads each
+# result page until the target is numbered, and clicks that result to arrive.
 HAPPY_PATH = [
-    S.INITIALIZING,
-    S.SEARCHING,
-    S.ANALYZING_RESULTS,
-    S.TARGET_FOUND,
-    S.STARTING_BROWSER,
-    S.OPENING_TARGET,
-    S.DWELLING,
-    S.INTERACTING,
-    S.DWELLING,
-    S.CAPTURING_RESULT,
-    S.COMPLETED,
+    S.INITIALIZING,  # 0
+    S.OPENING_SEARCH,  # 1
+    S.ENTERING_KEYWORD,  # 2
+    S.SEARCHING,  # 3
+    S.ANALYZING_RESULTS,  # 4
+    S.TARGET_FOUND,  # 5
+    S.CLICKING_RESULT,  # 6
+    S.OPENING_TARGET,  # 7
+    S.DWELLING,  # 8
+    S.INTERACTING,  # 9
+    S.DWELLING,  # 10
+    S.CAPTURING_RESULT,  # 11
+    S.COMPLETED,  # 12
 ]
 
-# What a session recorded when the project browsed a local results page looked like.
+# What a session recorded while the ranking came from a search provider's JSON API:
+# no search page at all, and the browser only started once the answer was in hand.
+# Those rows are still readable, so the edges that allow them stay.
 LEGACY_PATH = [
     S.INITIALIZING,
-    S.STARTING_BROWSER,
-    S.OPENING_SEARCH,
-    S.ENTERING_KEYWORD,
     S.SEARCHING,
     S.ANALYZING_RESULTS,
     S.TARGET_FOUND,
+    S.STARTING_BROWSER,
     S.OPENING_TARGET,
     S.DWELLING,
     S.CAPTURING_RESULT,
@@ -72,14 +75,19 @@ def test_happy_path_and_history() -> None:
 
 
 def test_target_not_found_path() -> None:
-    """A site the real results do not list is a finished session, not a failure."""
+    """A site the real results do not list is a finished session, not a failure.
+
+    The walk ends where the reading ends: no browser step is taken for a site that
+    was never listed, because there is nothing to click.
+    """
     machine = SessionStateMachine()
-    advance(machine, *HAPPY_PATH[:3], S.TARGET_NOT_FOUND, S.CAPTURING_RESULT, S.COMPLETED)
+    not_found = [*HAPPY_PATH[:5], S.TARGET_NOT_FOUND, S.CAPTURING_RESULT, S.COMPLETED]
+    advance(machine, *not_found)
     assert machine.is_terminal
-    assert machine.history[-3][0] is S.ANALYZING_RESULTS
+    assert [state for state, _ in machine.history] == [S.IDLE, *not_found]
 
 
-def test_legacy_browsed_search_path_is_still_readable() -> None:
+def test_legacy_api_path_is_still_readable() -> None:
     """Old sessions keep their states; the machine does not reject history it wrote."""
     machine = SessionStateMachine()
     advance(machine, *LEGACY_PATH)
@@ -91,9 +99,11 @@ def test_legacy_browsed_search_path_is_still_readable() -> None:
     [
         ([], S.SEARCHING),  # IDLE cannot jump ahead
         ([], S.COMPLETED),
-        (HAPPY_PATH[:2], S.STARTING_BROWSER),  # the ranking is read before a browser exists
-        (HAPPY_PATH[:3], S.OPENING_TARGET),  # must pass through TARGET_FOUND
-        (HAPPY_PATH[:9], S.COMPLETED),  # dwelling must capture the result first
+        # the browser is opened before the search page, never after it
+        (HAPPY_PATH[:2], S.STARTING_BROWSER),
+        (HAPPY_PATH[:3], S.OPENING_TARGET),  # the keyword is typed, nothing is read yet
+        (HAPPY_PATH[:4], S.CLICKING_RESULT),  # a page has to be read before a result is clicked
+        (HAPPY_PATH[:9], S.COMPLETED),  # an interaction ends before the result is captured
         (HAPPY_PATH, S.DWELLING),  # nothing leaves a terminal state
         (HAPPY_PATH[:3], S.INITIALIZING),  # no going back
         (HAPPY_PATH[:3], S.PAUSED),  # PAUSED only via pause()
@@ -163,10 +173,10 @@ def test_allowed_from_matches_documentation() -> None:
         S.STOPPED,
     }
     assert SessionStateMachine.allowed_from(S.INITIALIZING) == {
-        S.OPENING_SEARCH,  # browser channel: read the page first
-        S.SEARCHING,  # API channel: ask the provider first
-        S.TARGET_FOUND,  # direct visit: nothing to ask
-        S.STARTING_BROWSER,  # a session with no search step at all
+        S.OPENING_SEARCH,  # a journey that searches: Google's page comes first
+        S.SEARCHING,  # a session recorded when a provider answered instead
+        S.TARGET_FOUND,  # direct visit: nothing had to be found
+        S.STARTING_BROWSER,  # a direct visit starts its own browser
         S.FAILED,
         S.STOPPED,
     }
@@ -371,12 +381,21 @@ def test_each_channel_is_a_legal_path(path: list[S]) -> None:
 
 
 def test_direct_visit_shortcut_is_a_legal_transition() -> None:
-    machine = SessionStateMachine()
-    advance(
-        machine, S.INITIALIZING, S.STARTING_BROWSER, S.TARGET_FOUND, S.OPENING_TARGET, S.DWELLING
-    )
-    assert machine.state is S.DWELLING
+    """A direct visit finds nothing, so "found" is not a step it has to take.
+
+    The order that matters is the other way round: the browser exists before the tab
+    is aimed at the target, and a session that is still on the search page cannot
+    claim to be opening the target - that would let a journey visit a site it never
+    saw listed.
+    """
+    for path in (
+        [S.INITIALIZING, S.TARGET_FOUND, S.STARTING_BROWSER, S.OPENING_TARGET, S.DWELLING],
+        [S.INITIALIZING, S.STARTING_BROWSER, S.OPENING_TARGET, S.DWELLING],
+    ):
+        machine = SessionStateMachine()
+        advance(machine, *path)
+        assert machine.state is S.DWELLING
     other = SessionStateMachine()
-    advance(other, S.INITIALIZING, S.STARTING_BROWSER)
+    advance(other, S.INITIALIZING, S.OPENING_SEARCH, S.ENTERING_KEYWORD)
     with pytest.raises(InvalidStateTransitionError):
-        other.transition(S.OPENING_TARGET)  # the target must still be "found" first
+        other.transition(S.OPENING_TARGET)

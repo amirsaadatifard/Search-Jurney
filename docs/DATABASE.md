@@ -28,7 +28,7 @@ or deleting a library entry cannot change a scenario or its history.
 | `target_sites` | The automation allowlist | `approved_for_automation` and `enabled` must both be true; `domain` indexed |
 | `browser_profiles` | Viewport, locale, time zone, headless, JavaScript, downloads, user-agent mode | Empty locale/time zone = browser default |
 | `proxy_profiles` | Protocol, host, port, username, last test result | **No password column**; `has_password` only records that a secret exists in the OS credential store |
-| `scenarios` | Keyword, target, profiles, dwell range, iterations, scroll and session options | Check constraints keep the data valid even if the application is bypassed; `search_profile` names the real provider the ranking is read from |
+| `scenarios` | Keyword, target, profiles, dwell range, iterations, scroll and session options | Check constraints keep the data valid even if the application is bypassed; the scenario names no rank, and no search-engine choice either - there is one way to search now |
 | `automation_sessions` | One row per iteration | Copies scenario name, keyword and target, plus `settings_snapshot` (JSON) |
 | `session_events` | Timeline | One row per event with its state and a JSON `data` payload |
 | `screenshots` | Metadata of captured images | The file itself lives in `data/screenshots/YYYY-MM-DD/` |
@@ -40,8 +40,10 @@ or deleting a library entry cannot change a scenario or its history.
 `scenarios`: `min_dwell_seconds >= 0`, `max_dwell_seconds >= min_dwell_seconds`, `iterations > 0`,
 `delay_between_iterations >= 0`, `max_scroll_actions >= 0`.
 
-A scenario stores no expected or simulated rank: the position belongs to the observation the provider
-produced, so a journey can always be compared with the answer it actually got.
+A scenario stores no expected or simulated rank: the position belongs to the observation the search step
+produced, so a journey can always be compared with the answer it actually got. The *budget* of that search
+- results per page and how many pages to walk - lives in `application_settings` rather than in each
+scenario, because it is a rule about the search engine and not about the site under test.
 
 Foreign keys: a target site or browser profile that is still used cannot be deleted (`RESTRICT`); deleting
 a proxy profile clears the reference (`SET NULL`, but the application refuses to delete a profile that
@@ -73,9 +75,12 @@ Foreign keys used in joins and filters (`scenarios.target_site_id`, `.browser_pr
 ## Migrations
 
 `migrations/versions/0001_initial_schema.py` creates the schema, `0002` adds the observation tables
-(`search_observations`, `observed_results`) that store what the search provider returned, and `0003`
-moves scenarios from the removed local simulator to the real provider (it updates `search_profile`,
-drops `simulated_position` and renames the seeded demo scenario). `DatabaseMigrator` runs Alembic
+(`search_observations`, `observed_results`) that store what the search step read, `0003` moves scenarios
+off the removed local simulator (it updates `search_profile`, drops `simulated_position` and renames the
+seeded demo scenario), `0004` names the channel each scenario used, and `0005` drops `search_profile`
+altogether: browsing Google's own page is the only ranking source now, so a per-scenario choice would
+describe nothing. Old observations keep their `provider` column, so history written before `0005` still
+says which channel produced it. `DatabaseMigrator` runs Alembic
 programmatically at start-up (no dependency on the working directory). A database that contains tables
 but no migration history is refused instead of being guessed at. A test compares the migrated schema
 with the ORM models, so the two cannot drift apart.

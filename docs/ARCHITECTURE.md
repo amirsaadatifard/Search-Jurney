@@ -12,24 +12,22 @@ src/ui              PySide6 windows, pages, dialogs, live run view
   └─▶ src/automation    observed through Qt signals
 
 src/services        business rules: scenarios, keywords, target sites, browser and
-  │                   proxy profiles, safety, Google research, reports, dashboard,
+  │                   proxy profiles, safety, reports, dashboard,
   │                   backup, settings, demo
   ├─▶ src/database      models, repositories, Alembic
   ├─▶ src/networking    OS credential store, proxy connection test
   └─▶ src/domain        enums, exceptions, validation schemas (depends on nothing)
 
 src/automation        session runner, state machine, engine interface, Playwright
-  │                   engine, run service, rank observers, results-page reader
-  ├─▶ src/search_providers   Google Custom Search JSON API - the ranking data of that channel
-  └─▶ src/local_servers      the bundled sample website: a page to visit, never a
-                             search source
+                      engine, run service, the Google search step (page knowledge,
+                      page actions, the walk over result pages, the journal)
 ```
 
 Allowed dependency direction is **downwards only**. `src/domain` imports nothing from the project;
 `src/database` imports only `domain`; services import database, domain, networking; automation imports
-services, domain and the search provider; `search_providers` imports domain only and talks to the outside
-world. No package below `ui` opens a browser: search data arrives either as API results or as one read of
-Google's results page, and the browser is driven exclusively by `src/automation`. `src/app` is the *composition root*: the only place that knows
+services and domain. No package below `ui` opens a browser: the ranking arrives as a read of Google's own
+results page, and the browser is driven exclusively by `src/automation` - which is the only package that
+imports Playwright, and the only one allowed to open a search engine. `src/app` is the *composition root*: the only place that knows
 every concrete class.
 
 | Package | Responsibility |
@@ -38,9 +36,8 @@ every concrete class.
 | `domain/` | Enums, exception hierarchy, Pydantic input schemas |
 | `database/` | Engine and sessions, ORM models, repositories, Alembic runner |
 | `services/` | All business rules (see below) |
-| `automation/` | Browser automation: engine interface, state machine, runner, run service, rank observers, the Google results-page reader |
+| `automation/` | Browser automation: engine interface, state machine, runner, run service, the Google search step |
 | `local_servers/` | Bundled sample website and `LocalServerManager` - a page to visit, never a search source |
-| `search_providers/` | The API channel: `SearchProvider` protocol, the Google Custom Search JSON API client, domain matching (also used by the browser channel's parser) |
 | `networking/` | Credential store (OS keyring), proxy connection tester |
 | `reports/` | CSV / Excel / JSON exporters |
 | `logging_config/` | structlog setup, rotating JSON file, in-memory buffer for the GUI |
@@ -74,9 +71,9 @@ through a small thread-safe `RunControl` object that the worker polls at safe bo
 ## The automation core
 
 See [AUTOMATION_ENGINE.md](AUTOMATION_ENGINE.md). In short: `SessionRunner` drives one session through
-a validated state machine against the abstract `AutomationEngine`. Each iteration first asks a
-`RankObserver` where the target site ranks — that answer comes from `src/search_providers`, never from a
-page — and the browser is then started only to visit the approved site. The Playwright implementation is
+a validated state machine against the abstract `AutomationEngine`. Each iteration first *searches*: the
+browser opens Google's result page for the keyword, and the target's position is read out of the pages
+until it turns up — then the journey reaches the site by clicking that result. The Playwright implementation is
 assembled from single-purpose services (browser manager, target actions, interaction service, screenshot
 service). Everything the browser may reach is decided by the central `DomainSafetyService`
 ([SAFETY.md](SAFETY.md)).
@@ -114,8 +111,9 @@ Two levels, on purpose:
 | Live view = periodic screenshots | Playwright cannot drive a `QWebEngineView`; screenshots work for headless profiles too |
 | Painter-based charts | Full control over mark specs and theming, no extra chart dependency |
 | Secrets only in the OS credential store | Never in the database, logs, snapshots or exports |
-| Search data from the provider API, not from the browser | Google's terms forbid scraping, and a scraped results page is not reproducible data; the official API is documented, keyed and quota-metered, so the same query can be audited later |
-| A local target skips the ranking step | The bundled sample site and private development hosts are not in Google's index; asking would only waste quota, and inventing a position would corrupt the record |
+| Search data read from the results page in the browser, not from an API | An API answer is a *different* ranking (no personalisation, no location) and needs a key, a quota and a second code path; the page the test browser was shown is the ranking the journey actually followed. The cost is honesty about terms of service: automated access is against them, so the exception is kept narrow — one query page at a time, no evasion, and a refusal ends the session |
+| Every read is stored as an observation | A result page is not reproducible the way an API answer is, so the exact links that were seen are saved with the session; a claim of rank can be audited against them |
+| A local target skips the search step | The bundled sample site and private development hosts are not in Google's index; asking would only burn the pacing budget, and inventing a position would corrupt the record |
 
 ## Directory map
 
@@ -125,9 +123,8 @@ src/app/               bootstrap, container, config, paths, health, constants
 src/domain/            enums, exceptions, schemas
 src/database/          base, session, migrator, models/, repositories/
 src/services/          business rules
-src/automation/        engine, state machine, runner, Playwright services
+src/automation/        engine, state machine, runner, search walk, Playwright services
 src/local_servers/     target_site/, server_manager
-src/search_providers/  base.py (protocol), google_cse.py (the real data), matching.py
 src/networking/        credentials, proxy_manager
 src/reports/           csv / excel / json exporters
 src/logging_config/    structured logging

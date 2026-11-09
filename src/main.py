@@ -11,7 +11,9 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from src.app.bootstrap import bootstrap, shutdown
+from src.app.config import AppConfig
 from src.app.constants import APP_NAME, APP_ORGANIZATION, APP_SLUG, APP_VERSION
+from src.app.paths import PROJECT_ROOT
 from src.logging_config import get_logger
 from src.services.settings_service import SettingKey
 from src.ui.icons import make_app_icon
@@ -40,6 +42,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="start the application, then exit automatically (used by CI)",
     )
     developer.add_argument(
+        "--debug",
+        action="store_true",
+        help="log every step of a journey (each page opened, selector matched, result "
+        "count, link clicked, landing URL) to the console and to the Logs page",
+    )
+    developer.add_argument(
         "--screenshot", type=Path, help="with --smoke-test: save the window to this PNG file"
     )
     developer.add_argument(
@@ -62,7 +70,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName(APP_ORGANIZATION)
 
-    container = bootstrap()
+    container = bootstrap(config=_config(args))
+    if args.debug:
+        log.info("debug_logging_enabled", log_file=str(container.paths.log_file))
+        print(
+            f"[search-journey] debug logging is on - every step of a journey is printed "
+            f"here, on the Logs page, and in {container.paths.log_file}",
+            flush=True,
+        )
     try:
         saved_mode = ThemeMode.parse(container.settings.get(SettingKey.UI_THEME, ThemeMode.SYSTEM))
         theme = ThemeManager(app, ThemeMode(args.theme) if args.theme else saved_mode)
@@ -90,6 +105,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         shutdown(container)
     return exit_code
+
+
+def _config(args: argparse.Namespace) -> AppConfig:
+    """Startup configuration, with ``--debug`` forcing the log level."""
+    config = AppConfig.from_environment(env_file=PROJECT_ROOT / ".env")
+    if args.debug:
+        config = config.model_copy(update={"log_level": "DEBUG"})
+    return config
 
 
 def _set_windows_app_id() -> None:
