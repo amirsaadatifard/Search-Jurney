@@ -1,15 +1,18 @@
-"""Target-domain normalisation and matching against search results."""
+"""Normalising a target domain and matching it against search results.
+
+Used by the Google journey (which reads results out of the page) and by the
+dwell interactions, so "is this result the approved site?" means the same thing
+everywhere: the domain itself or one of its subdomains.
+"""
 
 from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Sequence
 from typing import Final
 from urllib.parse import urlsplit
 
 from src.domain.exceptions import InvalidConfigurationError
-from src.search_providers.base import ProviderResult
 
 _LABEL: Final = r"[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?"
 _HOST_PATTERN: Final = re.compile(rf"^{_LABEL}(?:\.{_LABEL})*$")
@@ -64,11 +67,3 @@ def domain_matches(result_url_domain: str, target_domain: str) -> bool:
     domain = _strip_www(result_url_domain.lower())
     target = _strip_www(target_domain.lower())
     return bool(domain) and (domain == target or domain.endswith(f".{target}"))
-
-
-def find_target(results: Sequence[ProviderResult], target_domain: str) -> ProviderResult | None:
-    """The best-ranked result on the target domain, or ``None``."""
-    for result in sorted(results, key=lambda item: item.position):
-        if domain_matches(result.domain, target_domain):
-            return result
-    return None

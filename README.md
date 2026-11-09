@@ -8,40 +8,38 @@ test scenarios: look up a keyword on Google, see where your site actually ranks 
 stay for a configured dwell time while scrolling, record every step, and report on the outcome. You can
 watch each run live.
 
-It is a university capstone project. Search data is **real**, and each scenario picks how it is read:
+It is a university capstone project, and the ranking it reports is **real**: the application searches
+Google the way a person does. Chromium opens Google's own results page for the keyword, reads the list the
+page actually shows, walks to the next page when the target is not on the first one, and reaches the site
+by clicking *its own result*. No API key, no search-engine id, nothing to configure — and the position is
+exactly what this browser was shown, which is the only ranking this project claims to know.
 
-* **Google in the browser** (the default, nothing to configure): Chromium opens Google's own results page
-  for the keyword, the position is read from that page and the browser is then used for the visit. No API
-  key, no quota, and the rank is exactly what this browser was shown. Be aware that automated access is
-  against Google's terms of service, so Google may answer with a captcha instead of results; the session
-  then fails and says so — the application never tries to get past it.
-* **Google API**: the official [Custom Search JSON API](https://developers.google.com/custom-search/v1/overview),
-  which is permitted and stable but needs your own API key and search-engine id (two minutes to set up,
-  see [Google setup](#google-setup)).
+Automated access is against Google's terms of service, so Google may answer with a captcha instead of
+results. The session then fails and says so; the application never tries to get past it, never solves a
+challenge and never retries past the pace a person would keep.
 
 Pages are opened only for sites you approve: your own production site, a development/staging site, or the
 **bundled local sample website** that ships with the project for offline practice.
 
-## Google setup
+## Google, and what a journey asks of it
 
-1. Enable *Custom Search API* in a Google Cloud project and create an **API key**
-   (Cloud Console → APIs & Services → Credentials).
-2. Create a [Programmable Search Engine](https://programmablesearchengine.google.com/controlpanel/create)
-   and select **"Search the entire web"** — otherwise it only searches the sites you list and reports
-   nothing about yours. Copy its **search engine id** (`cx`).
-3. In the application open **Google Research** → *Google credentials and system checks*, enter both
-   values and press *Save credentials*. The key goes into the operating system's credential store (never
-   into the database); the engine id is a plain setting. *Test Google connection* then confirms them with
-   a single query, and *Run system checks* reports key, quota reachability, Chromium and the allowlist.
+Nothing to set up. What the search step does, and what it costs:
 
-*Only needed for the API channel.* Scenario runs with the browser channel ask for no key at all; the
-Google Research page stores its own observations through the API, so the two channels stay comparable.
+* **One query page at a time.** The keyword goes into Google's own box; the pages are read in order, and
+  *Settings → Result pages to walk* (default 5, at most 10) bounds how far a journey looks when its site
+  is not listed. Each query waits at least two seconds behind the previous one.
+* **A page size, not a promise.** *Results per page* (10 by default) is passed to Google as its own `num`
+  parameter; the page shows what it decides to show, and the position is counted from what it showed.
+* **A ranking with a name on it.** The position belongs to *this browser, this profile, this moment* — no
+  location or personalisation is requested beyond the language and country the browser profile already
+  has. Every observation records where it came from.
+* **Nothing hidden.** If Google answers with a consent wall, the journey answers it by pressing the page's
+  own button; if it answers with a refusal, the session fails and the reason is in the timeline and the log.
+* **`--debug`** prints each page opened, selector matched and result read, so a run can be followed without
+  guessing.
 
-What the API's limits mean for this tool: ten results per page and at most one hundred per query, a free
-daily quota (Google bills beyond it), and a ranking that is *this API's* ranking — personalisation,
-location and browser history are not applied, so it can differ from what you see on google.com.
-The observed position is always labelled with the provider that produced it, and a session that cannot
-reach Google **fails** rather than falling back to made-up data.
+A site Google cannot list — the bundled sample website, a private development host — is not an error: the
+scenario runs as a **direct visit** and claims no position.
 
 ## University use case
 
@@ -55,8 +53,9 @@ described in a report ([docs/PROJECT_REPORT_NOTES.md](docs/PROJECT_REPORT_NOTES.
 This tool is for QA testing and research in environments you control. By design it:
 
 - opens only explicitly approved test sites (plus the bundled `localhost` sample website);
-- reads Google through its documented API and never browses, clicks or scrolls inside a search engine, so
-  it cannot influence rankings, CTR, impressions or analytics;
+- browses only the result pages of its own search step, and clicks only the result that belongs to the
+  approved target site: no scrolling, no typing and no clicking inside Google beyond reading those pages,
+  so it cannot influence rankings, CTR, impressions or analytics;
 - implements **no** CAPTCHA solving, anti-bot evasion, fingerprint spoofing, IP rotation, proxy scraping
   or ad clicking;
 - treats proxy profiles purely as a network-testing setting for controlled environments.
@@ -71,9 +70,9 @@ How this is enforced in code: [docs/SAFETY.md](docs/SAFETY.md).
 | Keywords | Library with tags and notes, bulk add, TXT/CSV import, CSV export |
 | Target sites | Approved-sites allowlist with environments; approval needs an explicit confirmation |
 | Profiles | Browser profiles (viewport, locale, time zone, headless …); proxy profiles with secure password storage and a connection test |
-| Search data | Real Google ranking, read either from the results page in the browser (no key) or from the official Custom Search JSON API (key): rank, URL and result count per keyword; API queries are also stored as observations |
+| Search data | Real Google ranking, read from the results page in the browser: position, URL and result count per keyword, walked page by page, with every read stored as an auditable observation |
 | Sample website | A five-page local site (FastAPI) to practise visits on, with long pages, scrollable content and safety fixtures |
-| Automation | Playwright/Chromium journeys, 17-state state machine, pause / resume / stop, safe scrolling and page visits |
+| Automation | Playwright/Chromium journeys, 15-state state machine, pause / resume / stop, safe scrolling and page visits |
 | Live view | Current step, URL, target position, session clock, dwell countdown, live browser picture, event timeline |
 | Records | Session history with timeline, settings snapshot, errors and screenshots; reproducible (seed stored) |
 | Insight | Dashboard (KPIs + 4 charts), logs viewer, filtered reports exported as CSV, Excel (4 sheets) or JSON |
@@ -142,6 +141,7 @@ Other entry points:
 | `python -m src.main --demo` | Open the app and run the demo immediately |
 | `python -m src.local_servers` | Start only the bundled sample website (`:8766`) to look at it in a browser |
 | `python -m src.main --smoke-test` | Start, then exit (used for checks) |
+| `python -m src.main --debug` | Log every step of a journey: pages opened, selectors matched, results read |
 
 ## Demo mode
 
@@ -157,21 +157,22 @@ Other entry points:
 ## How a session works
 
 ```
-ask Google for the keyword → is the target site in the real results?
-   ├─ no  → record "not listed" (a result, not an error) and stop
-   └─ yes → record the observed position → open the site directly
+type the keyword into Google → is the target site in the results it shows?
+   ├─ no, and pages left to walk → click "next" and read again
+   ├─ no, pages exhausted        → record "not listed" (a result, not an error) and stop
+   └─ yes → record the position   → click that result
             → dwell (scroll, visit another page of the site) → screenshot → finish
 ```
 
-With the browser channel, "ask Google" means one navigation: Chromium opens
-`https://www.google.com/search?q=…`, the result links are read out of the page, and the tab is left blank
-again — no result is clicked, nothing is scrolled, a refusal is reported rather than worked around, and
-Google's page is never stored. The position found there is what the timeline records.
+"Ask Google" is a browsing step, not an API call: Chromium opens Google's start page, types the keyword
+into the real search box and reads the links the page lists. The visit then follows Google's own link —
+including its `/url` redirect — so the tab arrives the way a visitor's does, and the address it lands on
+must still be an approved site. A refusal is reported, never worked around, and Google's page is never
+photographed or stored: the only pages a session saves are the target site's.
 
-With the API channel the ranking arrives before any browser exists, so a site that is not listed loads no
-page at all. Either way the *visit* uses the approved address of the site, never a link the search engine
-served. A journey whose target Google cannot index (the local sample site, a private development host)
-skips the ranking step and is recorded as a direct visit without a position.
+Nothing is invented when the site is missing. A journey whose target Google cannot index (the local sample
+site, a private development host) skips the search step altogether and is recorded as a **direct visit**
+without a position.
 
 Every step is a state of a validated state machine, is written to the database as an event, and is
 shown live. Details: [docs/AUTOMATION_ENGINE.md](docs/AUTOMATION_ENGINE.md).
@@ -186,7 +187,6 @@ afterwards) or copy `.env.example` to `.env`:
 | `SJAT_DATA_DIR` | `data` | Base folder for database, logs, screenshots, backups, exports |
 | `SJAT_DATABASE_FILE` / `SJAT_LOGS_DIR` / `SJAT_SCREENSHOTS_DIR` | inside the data folder | Optional separate locations |
 | `SJAT_TARGET_PORT` | `8766` | Port of the bundled sample website (1024-65535, bound to `127.0.0.1`) |
-| `SJAT_GOOGLE_API_KEY` / `SJAT_GOOGLE_ENGINE_ID` | unset | Google search credentials for headless or development use; the stored key from **Google Research** wins |
 | `SJAT_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ## Data locations
@@ -228,9 +228,9 @@ src/
   app/               bootstrap, container, config, paths, health checks
   domain/            enums, exceptions, validation schemas
   database/          engine, ORM models, repositories, migrator
-  services/          business rules (scenarios, Google research, safety, reports, backup, …)
-  search_providers/  the search API behind the ranking data (Google Custom Search JSON API)
-  automation/        engine interface, state machine, runner, Playwright services, rank observer
+  services/          business rules (scenarios, safety, reports, backup, …)
+  automation/        engine interface, state machine, runner, Playwright services, the Google
+                     search step (page knowledge, the actions on the page, the walk, the journal)
   local_servers/     sample website, server manager
   networking/        credential store, proxy tester
   reports/           CSV / Excel / JSON exporters

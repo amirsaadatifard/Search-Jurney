@@ -15,7 +15,6 @@ class PageKey(StrEnum):
     TARGETS = "targets"
     PROXIES = "proxies"
     BROWSER_PROFILES = "browser_profiles"
-    GOOGLE_RESEARCH = "google_research"
     RUNNER = "runner"
     LIVE_VIEW = "live_view"
     SESSIONS = "sessions"
@@ -54,7 +53,6 @@ NAVIGATION: tuple[NavSection, ...] = (
         "EXECUTION",
         (
             NavItem(PageKey.RUNNER, "Automation Runner", "runner"),
-            NavItem(PageKey.GOOGLE_RESEARCH, "Google Research", "search"),
             NavItem(PageKey.LIVE_VIEW, "Live Session View", "live"),
             NavItem(PageKey.SESSIONS, "Session History", "history"),
         ),

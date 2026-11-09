@@ -135,7 +135,7 @@ class SettingsPage(BasePage):
         card.body.addWidget(
             _muted(
                 "Used for new scenarios (dwell times) and for every run (timeout, screenshots, and "
-                "the Google query settings both rank sources send)."
+                "and the query settings every journey sends)."
             )
         )
 
@@ -149,6 +149,7 @@ class SettingsPage(BasePage):
         self.max_dwell = spin(100000)
         self.timeout = spin(100000)
         self.search_results = spin(1000, "")
+        self.search_pages = spin(10, "")
         self.search_language = QLineEdit()
         self.search_language.setPlaceholderText("e.g. de or en-US (blank = Google decides)")
         self.search_country = QLineEdit()
@@ -167,7 +168,8 @@ class SettingsPage(BasePage):
             ("max_dwell_seconds", "Default maximum dwell time", self.max_dwell),
             ("timeout_seconds", "Default timeout per step", self.timeout),
             ("", "Maximum concurrent sessions", self.concurrent),
-            ("requested_results", "Results read per Google query", self.search_results),
+            ("requested_results", "Results read per Google page", self.search_results),
+            ("max_search_pages", "Result pages to walk", self.search_pages),
             ("search_language", "Google interface language", self.search_language),
             ("search_country", "Google country", self.search_country),
         )
@@ -204,6 +206,7 @@ class SettingsPage(BasePage):
         self.max_dwell.setValue(defaults.max_dwell_seconds)
         self.timeout.setValue(defaults.timeout_seconds)
         self.search_results.setValue(defaults.requested_results)
+        self.search_pages.setValue(defaults.max_search_pages)
         self.search_language.setText(defaults.search_language)
         self.search_country.setText(defaults.search_country)
         for key, box in self.shot_boxes.items():
@@ -222,6 +225,7 @@ class SettingsPage(BasePage):
             search_language=self.search_language.text(),
             search_country=self.search_country.text(),
             requested_results=self.search_results.value(),
+            max_search_pages=self.search_pages.value(),
         )
         try:
             self._container.settings.save_automation_defaults(defaults)

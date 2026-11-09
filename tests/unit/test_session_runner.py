@@ -1,8 +1,11 @@
-"""SessionRunner behaviour, verified against a fake engine and a fake rank observer.
+"""SessionRunner behaviour, verified against a fake browser and the real search walk.
 
-The ranking is the first step of every journey, so the fake rank observer is the
-piece that decides whether a session opens a browser at all - which is exactly
-what these tests are about. No browser and no network are involved.
+The search step is the heart of a journey, so these tests hold it to account: the
+keyword goes into Google's box, the position is whatever the page showed, the tab is
+left on the site the result pointed at, and Google's own page is never stored. The
+fake engine stands in for Chromium - a scripted set of result pages - while the
+walk, the parser, the numbering, the allowlist and the state machine are the shipped
+ones, so a broken journey fails here rather than on someone's desktop.
 """
 
 from __future__ import annotations
@@ -10,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -18,115 +21,101 @@ import pytest
 
 from src.automation.control import RunControl
 from src.automation.engine import AutomationEngine
-from src.automation.google_search_page import search_url
+from src.automation.google_search_page import MAX_RESULTS, PageKind
 from src.automation.interaction_service import ScheduledAction
 from src.automation.models import (
     MODE_BROWSER,
     MODE_DIRECT,
-    MODE_GOOGLE,
     BrowserSettings,
     InteractionOutcome,
     ProxySettings,
-    RankObservation,
-    ResultItem,
-    RunSummary,
     SearchPageRead,
     SessionPlan,
     SessionResult,
 )
 from src.automation.observer import RunObserver
-from src.automation.rank_observer import GooglePageRankObserver, RankObserver
 from src.automation.recorder import SessionRecorder
-from src.automation.session_runner import SNAPSHOT_RESULT_LIMIT, SessionRunner
+from src.automation.search_journal import SearchJournal
+from src.automation.search_walk import SNAPSHOT_RESULT_LIMIT, GoogleSearchWalk
+from src.automation.session_runner import SessionRunner
+from src.database.models import SearchObservation
 from src.database.repositories import SessionRepository
 from src.database.session import Database
 from src.domain.enums import (
+    Environment,
     EventType,
     ScreenshotKind,
-    SearchProfile,
     SessionState,
     SessionStatus,
 )
 from src.domain.exceptions import (
     BrowserLaunchError,
-    GoogleQuotaError,
-    InvalidConfigurationError,
     NavigationError,
+    SafetyViolationError,
     SearchError,
 )
 from src.services.safety_service import AllowedOrigin, DomainSafetyService
 
 TARGET = "https://shop.example/"
+GOOGLE_PAGE = "https://www.google.com/search"
 Hook = Callable[[], Awaitable[None]]
 
 
-class FakeRankObserver:
-    """Answers with a scripted ranking; ``error`` makes the provider itself fail.
+def result(title: str, url: str, anchor: int) -> tuple[str, str, int]:
+    """One ``(title, href, anchor index)`` triple, as a page read yields them."""
+    return (title, url, anchor)
 
-    It is a ``RankObserver`` by shape, not by inheritance, so a missing member of
-    the protocol shows up here as a failing test rather than a silent ``None``.
-    """
 
-    def __init__(
-        self,
-        position: int | None = 3,
-        *,
-        result_count: int = 10,
-        target_url: str = TARGET,
-        observation_id: int | None = 77,
-        error: Exception | None = None,
-    ) -> None:
-        self.position = position
-        self.result_count = result_count
-        self.target_url = target_url
-        self.observation_id = observation_id
-        self.error = error
-        self.calls: list[SessionPlan] = []
-        self.on_answer: Callable[[], None] | None = None
+def page(*entries: tuple[str, str, int]) -> list[tuple[str, str, int]]:
+    return list(entries)
 
-    @property
-    def provider_name(self) -> str:
-        return "google-custom-search"
 
-    @property
-    def credentials_ready(self) -> bool:
-        return self.error is None
-
-    async def observe(
-        self, plan: SessionPlan, engine: AutomationEngine | None = None
-    ) -> RankObservation:
-        self.calls.append(plan)
-        if self.error is not None:
-            raise self.error
-        if self.on_answer is not None:
-            self.on_answer()
-        return RankObservation(
-            provider=self.provider_name,
-            position=self.position,
-            result_count=self.result_count,
-            target_url=self.target_url,
-            observation_id=self.observation_id,
-            results=tuple(
-                ResultItem(n, f"Other {n}", f"https://site{n}.example/page")
-                for n in range(1, self.result_count + 1)
-            ),
-        )
+#: A first page on which the approved site ranks second, after an ad-shaped link
+#: that Google's own host carries and must not be counted as a result.
+FIRST_PAGE = page(
+    result("Ads are not results", "https://www.google.com/aclk?ad=1", 0),
+    result("Ceramic Mug Studio", "https://other.example/mugs", 1),
+    result("Handmade mugs | Shop", "https://shop.example/handmade-mugs", 2),
+    result("Mug care", "https://shop.example/blog/care", 3),
+)
+SECOND_PAGE = page(
+    result("Mug glossary", "https://other.example/glossary", 0),
+    result("Studio diary", "https://other.example/diary", 1),
+    result("Shop at the fair", "https://shop.example/fair", 2),
+)
+UNLISTED_PAGE = page(
+    result("Ceramic Mug Studio", "https://other.example/mugs", 0),
+    result("Mug care", "https://someone.example/care", 1),
+)
 
 
 class FakeEngine(AutomationEngine):
-    """Scriptable engine: records calls, can fail at a step or run a hook there."""
+    """Scriptable browser: serves ``pages``, records everything the journey does.
 
-    def __init__(self) -> None:
+    The reads come out of ``pages`` in order, so a journey that walks to page two
+    gets page two - and a test that expects a walk can count the requests.
+    """
+
+    def __init__(self, pages: Sequence[Sequence[tuple[str, str, int]]] = (FIRST_PAGE,)) -> None:
+        self.pages = [list(items) for items in pages]
         self.calls: list[str] = []
         self.opened: list[str] = []
-        self.search_urls: list[str] = []
-        self.search_items: list[tuple[str, str]] = []
-        self.search_fails: Exception | None = None
+        self.searches: list[int] = []
+        self.next_requests: list[int] = []
+        self.clicks: list[dict[str, Any]] = []
+        self.scopes: list[str] = []
         self.fail_at: dict[str, Exception] = {}
         self.hooks: dict[str, Hook] = {}
+        self.search_fails: Exception | None = None
+        self.landing: str | None = None
+        self.blocked: list[dict[str, Any]] = []
+        self.previews = 0
+        #: ``(page url, kind)`` of every capture: the evidence for "never photographed".
+        self.shots: list[tuple[str, str]] = []
         self._url = ""
         self._open = False
 
+    # -- plumbing ---------------------------------------------------------------- #
     @property
     def current_url(self) -> str:
         return self._url
@@ -142,20 +131,59 @@ class FakeEngine(AutomationEngine):
         if name in self.fail_at:
             raise self.fail_at[name]
 
+    def _read(self, index: int, limit: int) -> SearchPageRead:
+        items = tuple(self.pages[index])[:limit]
+        return SearchPageRead(
+            kind=PageKind.SEARCH.value,
+            items=items,
+            page_url=f"{GOOGLE_PAGE}?start={index * 10}",
+            page_number=index + 1,
+            has_next=index + 1 < len(self.pages),
+            next_url=f"{GOOGLE_PAGE}?start={(index + 1) * 10}",
+        )
+
+    @property
+    def screenshot_calls(self) -> list[str]:
+        return [call for call in self.calls if call.startswith("screenshot:")]
+
+    # -- the engine the journey talks to ----------------------------------------- #
     async def start_session(self, plan: SessionPlan) -> dict[str, Any]:
         await self._step("start_session")
         self._open = True
-        return {"version": "fake-1.0"}
+        return {"version": "fake-1.0", "network_fence": True}
 
-    async def read_search_page(self, url: str, limit: int) -> SearchPageRead:
-        """Answers with ``search_items``, as the real engine would after one navigation."""
-        await self._step("read_search_page")
+    async def open_search_scope(self) -> None:
+        await self._step("open_search_scope")
+        self.scopes.append("open")
+
+    async def close_search_scope(self) -> None:
+        await self._step("close_search_scope")
+        self.scopes.append("close")
+
+    async def search(self, plan: SessionPlan, *, limit: int = MAX_RESULTS) -> SearchPageRead:
+        await self._step("search")
         if self.search_fails is not None:
             raise self.search_fails
-        self.search_urls.append(url)
-        return SearchPageRead(
-            kind="search", items=tuple(self.search_items[:limit]), page_url=url, text=""
+        self.searches.append(limit)
+        return self._read(0, limit)
+
+    async def next_results_page(
+        self, plan: SessionPlan, read: SearchPageRead, *, limit: int = MAX_RESULTS
+    ) -> SearchPageRead | None:
+        await self._step("next_results_page")
+        index = read.page_number
+        self.next_requests.append(index)
+        if index >= len(self.pages):
+            return None
+        return self._read(index, limit)
+
+    async def click_result(self, result: Any, *, from_url: str = "") -> str:
+        await self._step("click_result")
+        self.clicks.append(
+            {"position": result.position, "anchor": result.anchor_index, "from": from_url}
         )
+        self._url = self.landing or result.url
+        return self._url
 
     async def open_url(self, url: str) -> str:
         await self._step("open_url")
@@ -173,11 +201,20 @@ class FakeEngine(AutomationEngine):
         self, kind: ScreenshotKind, session_id: int, keyword: str
     ) -> dict[str, Any] | None:
         self.calls.append(f"screenshot:{kind.value}")
+        self.shots.append((self._url, kind.value))
         return {"file": f"{kind.value}.png"}
 
     async def end_session(self) -> None:
         self.calls.append("end_session")
         self._open = False
+
+    async def capture_preview(self) -> bytes | None:
+        self.previews += 1
+        return b"png" if self._open else None
+
+    def drain_blocked(self) -> list[dict[str, Any]]:
+        out, self.blocked = list(self.blocked), []
+        return out
 
     async def close(self) -> None:
         self.calls.append("close")
@@ -192,6 +229,7 @@ class Recording(RunObserver):
     positions: list[int | None] = field(default_factory=list)
     finished: list[SessionResult] = field(default_factory=list)
     waits: list[float] = field(default_factory=list)
+    previews: list[bytes] = field(default_factory=list)
 
     def on_state_changed(self, state: SessionState, message: str) -> None:
         self.states.append(state)
@@ -213,6 +251,9 @@ class Recording(RunObserver):
 
     def on_waiting(self, seconds: float) -> None:
         self.waits.append(seconds)
+
+    def on_preview(self, image: bytes) -> None:
+        self.previews.append(image)
 
 
 class Broken(RunObserver):
@@ -245,39 +286,10 @@ def make_plan(**overrides: Any) -> SessionPlan:
         "search_language": "en",
         "search_country": "us",
         "requested_results": 10,
+        "max_search_pages": 5,
+        "mode": MODE_BROWSER,
     }
     return SessionPlan(**(values | overrides))
-
-
-def browser_plan(**overrides: Any) -> SessionPlan:
-    """A journey that reads Google's own page in the browser (the key-free channel)."""
-    return make_plan(mode=MODE_BROWSER, **overrides)
-
-
-def listed_items() -> list[tuple[str, str]]:
-    """What the fake page shows, Google's own links included.
-
-    The approved site is the second link a visitor would count: the ad-shaped
-    link on google.com is not a result, so it must not shift the numbering.
-    """
-    return [
-        ("Ads are not results", "https://www.google.com/aclk?ad=1"),
-        ("Ceramic Mug Studio", "https://other.example/mugs"),
-        ("Handmade mugs | Shop", "https://shop.example/handmade-mugs"),
-        ("Mug care", "https://shop.example/blog/care"),
-    ]
-
-
-def direct_plan(**overrides: Any) -> SessionPlan:
-    """A plan that skips the ranking step (a Google Research visit, or a local site)."""
-    values: dict[str, Any] = {
-        "mode": MODE_DIRECT,
-        "provider": "google-custom-search",
-        "observation_id": 42,
-        "observed_position": 6,
-        "observed_result_count": 10,
-    }
-    return make_plan(**(values | overrides))
 
 
 @pytest.fixture
@@ -286,44 +298,49 @@ def safety() -> DomainSafetyService:
 
 
 class Harness:
-    def __init__(self, database: Database, safety: DomainSafetyService) -> None:
+    """The runner wired the way the application wires it, minus Chromium."""
+
+    def __init__(
+        self,
+        database: Database,
+        safety: DomainSafetyService,
+        pages: Sequence[Sequence[tuple[str, str, int]]] = (FIRST_PAGE,),
+        *,
+        journal: bool = False,
+    ) -> None:
         self.database = database
-        self.engine = FakeEngine()
-        self.rank = FakeRankObserver()
+        self.engine = FakeEngine(pages)
         self.control = RunControl()
         self.observer = Recording()
         self.safety = safety
         self.seed = 1234
-        self.queries: list[str] = []
+        self.recorder = SessionRecorder(database)
+        self.journal = SearchJournal(database) if journal else None
 
     def runner(self, observer: RunObserver | None = None) -> SessionRunner:
-        return self._runner(observer, self.rank)
-
-    def browser_runner(self) -> SessionRunner:
-        """The runner as the application wires it for the browser channel.
-
-        The real :class:`GooglePageRankObserver` is used here on purpose: the fake
-        engine is the only thing standing in for Chromium, so the parsing, the
-        numbering and the position are the shipped ones.
-        """
-        return self._runner(None, GooglePageRankObserver())
-
-    def runner_without_provider(self) -> SessionRunner:
-        """A run with no search provider wired in - the misconfiguration to guard against."""
-        return self._runner(None, None)
-
-    def _runner(self, observer: RunObserver | None, rank: RankObserver | None) -> SessionRunner:
         return SessionRunner(
             self.engine,
-            SessionRecorder(self.database),
+            self.recorder,
             self.safety,
             self.control,
             observer if observer is not None else self.observer,
-            rank_observer=rank,
+            search_walk=GoogleSearchWalk(),
+            journal=self.journal,
             seed_source=lambda: self.seed,
         )
 
-    async def run(self, plan: SessionPlan | None = None) -> RunSummary:
+    def runner_without_search(self) -> SessionRunner:
+        """A build with no search step at all - the misconfiguration to guard against."""
+        return SessionRunner(
+            self.engine,
+            self.recorder,
+            self.safety,
+            self.control,
+            self.observer,
+            seed_source=lambda: self.seed,
+        )
+
+    async def run(self, plan: SessionPlan | None = None) -> Any:
         return await self.runner().run_plan(plan or make_plan())
 
     def sessions(self) -> list[Any]:
@@ -340,30 +357,49 @@ def harness(database: Database, safety: DomainSafetyService) -> Harness:
     return Harness(database, safety)
 
 
-# -- the ranking step --------------------------------------------------------------- #
-async def test_ranking_is_read_before_the_browser_starts(harness: Harness) -> None:
+# -- the journey ------------------------------------------------------------------------ #
+async def test_a_journey_reads_the_page_it_was_shown_and_clicks_its_own_result(
+    harness: Harness,
+) -> None:
     summary = await harness.run()
     assert (summary.completed, summary.failed, summary.total) == (1, 0, 1)
 
-    assert [plan.keyword for plan in harness.rank.calls] == ["handmade ceramic mugs"]
-    states = harness.observer.states
-    assert states.index(SessionState.SEARCHING) < states.index(SessionState.STARTING_BROWSER)
-    assert "start_session" in harness.engine.calls
+    # The browser is up before Google is asked, and the click is the way in.
+    assert harness.engine.calls[:5] == [
+        "start_session",
+        "open_search_scope",
+        "search",
+        "search",
+        "next_results_page",
+    ] or harness.engine.calls[:3] == ["start_session", "open_search_scope", "search"]
+    assert harness.engine.clicks == [{"position": 2, "anchor": 2, "from": f"{GOOGLE_PAGE}?start=0"}]
+    assert harness.engine.opened == []
+    assert harness.engine.scopes == ["open", "close"]
+
+    record = harness.sessions()[0]
+    assert (record.status, record.state) == (SessionStatus.COMPLETED, SessionState.COMPLETED)
+    # Three results, because Google's own ad link is not one of them: the count is
+    # what a visitor would number, not what the DOM happened to contain.
+    assert (record.target_found, record.target_position, record.results_count) == (
+        True,
+        2,
+        3,
+    )
+    assert record.planned_dwell_seconds == 0.5
+    assert 0.45 <= record.actual_dwell_seconds <= 0.9
+    assert record.browser_info == {"version": "fake-1.0", "network_fence": True}
+    assert harness.engine.calls[-2:] == ["end_session", "close"]
 
 
-async def test_the_observer_receives_the_query_options_of_the_plan(harness: Harness) -> None:
-    await harness.run(make_plan(search_language="de", search_country="de", requested_results=20))
-    plan = harness.rank.calls[0]
-    assert (plan.search_language, plan.search_country, plan.requested_results) == ("de", "de", 20)
-
-
-async def test_successful_session_records_the_full_timeline(harness: Harness) -> None:
+async def test_the_timeline_of_a_search_journey(harness: Harness) -> None:
     await harness.run()
     assert harness.events() == [
         EventType.SESSION_STARTED,
+        EventType.BROWSER_STARTED,
+        EventType.KEYWORD_ENTERED,
         EventType.SEARCH_OBSERVED,
         EventType.TARGET_FOUND,
-        EventType.BROWSER_STARTED,
+        EventType.RESULT_CLICKED,
         EventType.TARGET_OPENED,
         EventType.SCREENSHOT_CAPTURED,
         EventType.DWELL_STARTED,
@@ -371,15 +407,19 @@ async def test_successful_session_records_the_full_timeline(harness: Harness) ->
         EventType.SCREENSHOT_CAPTURED,
         EventType.SESSION_COMPLETED,
     ]
-    record = harness.sessions()[0]
-    assert (record.status, record.state) == (SessionStatus.COMPLETED, SessionState.COMPLETED)
-    assert (record.target_found, record.target_position, record.results_count) == (True, 3, 10)
-    assert record.observation_id == 77
-    assert record.planned_dwell_seconds == 0.5
-    assert 0.45 <= record.actual_dwell_seconds <= 0.8
-    assert record.browser_info == {"version": "fake-1.0"}
-    assert harness.engine.calls[0] == "start_session"
-    assert harness.engine.calls[-2:] == ["end_session", "close"]
+    assert harness.observer.states == [
+        SessionState.INITIALIZING,
+        SessionState.OPENING_SEARCH,
+        SessionState.ENTERING_KEYWORD,
+        SessionState.SEARCHING,
+        SessionState.ANALYZING_RESULTS,
+        SessionState.TARGET_FOUND,
+        SessionState.CLICKING_RESULT,
+        SessionState.OPENING_TARGET,
+        SessionState.DWELLING,
+        SessionState.CAPTURING_RESULT,
+        SessionState.COMPLETED,
+    ]
 
 
 async def test_every_event_carries_the_state_it_happened_in(harness: Harness) -> None:
@@ -387,49 +427,97 @@ async def test_every_event_carries_the_state_it_happened_in(harness: Harness) ->
     by_type = {event.event_type: event.state for event in harness.sessions()[0].events}
     assert by_type[EventType.SEARCH_OBSERVED] is SessionState.ANALYZING_RESULTS
     assert by_type[EventType.TARGET_FOUND] is SessionState.TARGET_FOUND
+    assert by_type[EventType.RESULT_CLICKED] is SessionState.CLICKING_RESULT
     assert by_type[EventType.DWELL_STARTED] is SessionState.DWELLING
     assert by_type[EventType.SESSION_COMPLETED] is SessionState.COMPLETED
 
 
-async def test_snapshot_keeps_the_observed_results_limited(harness: Harness) -> None:
-    harness.rank.result_count = 40
-    await harness.run(make_plan(requested_results=40))
-    snapshot = harness.sessions()[0].settings_snapshot
-    assert snapshot["observed_provider"] == "google-custom-search"
-    assert snapshot["observed_result_count"] == 40
-    assert len(snapshot["observed_results"]) == SNAPSHOT_RESULT_LIMIT
-    assert snapshot["observed_results"][0] == {
-        "position": 1,
-        "title": "Other 1",
-        "url": "https://site1.example/page",
-    }
-    assert snapshot["seed"] == 1234
-    assert snapshot["mode"] == MODE_GOOGLE
-
-
-# -- which page is opened ------------------------------------------------------------ #
-async def test_the_page_google_listed_is_the_page_that_is_opened(harness: Harness) -> None:
-    harness.rank.target_url = "https://shop.example/handmade-mugs"
+async def test_the_search_event_says_what_the_page_showed(harness: Harness) -> None:
     await harness.run()
-    assert harness.engine.opened == ["https://shop.example/handmade-mugs"]
-    assert EventType.SAFETY_BLOCKED not in harness.events()
+    event = next(
+        event
+        for event in harness.sessions()[0].events
+        if event.event_type is EventType.SEARCH_OBSERVED
+    )
+    assert event.data == {
+        "provider": "google-browser",
+        "observation_id": None,
+        "position": 2,
+        "result_count": 3,
+        "pages_walked": 1,
+    }
+    # The message is written for a person reading a report, not for a parser.
+    assert event.message == (
+        "google-browser: 'handmade ceramic mugs' on shop.example at position 2 "
+        "(of 3 results on the page)"
+    )
 
 
-async def test_a_listed_page_outside_the_allowlist_falls_back_to_the_approved_origin(
+async def test_a_session_that_never_left_the_first_page_reports_one_page_walked(
     harness: Harness,
 ) -> None:
-    harness.rank.target_url = "https://other-shop.example/page"
     await harness.run()
-    assert harness.engine.opened == [TARGET]  # the approved site, not the unapproved host
-    blocked = next(
-        e for e in harness.sessions()[0].events if e.event_type is EventType.SAFETY_BLOCKED
+    assert harness.engine.next_requests == []
+
+
+# -- walking the result pages ------------------------------------------------------------ #
+async def test_the_journey_walks_forward_until_the_target_turns_up(
+    database: Database, safety: DomainSafetyService
+) -> None:
+    harness = Harness(database, safety, (UNLISTED_PAGE, SECOND_PAGE))
+    summary = await harness.run(make_plan(requested_results=10))
+    assert summary.completed == 1
+
+    # Position 10 is "the second result of the second page" - the count runs across
+    # the pages, exactly as it would for a person scrolling down the results.
+    record = harness.sessions()[0]
+    # Two filler results on page one, then the third link of page two: position 5.
+    assert (record.target_found, record.target_position, record.results_count) == (True, 5, 5)
+    assert harness.engine.next_requests == [1]
+    assert harness.engine.clicks[0]["position"] == 5
+    assert harness.observer.states.count(SessionState.PAGINATING_RESULTS) == 1
+    assert harness.events().count(EventType.RESULTS_PAGED) == 1
+    paged = next(e for e in record.events if e.event_type is EventType.RESULTS_PAGED)
+    assert paged.data == {"page": 2}
+
+
+async def test_the_search_event_says_how_many_pages_it_walked(
+    database: Database, safety: DomainSafetyService
+) -> None:
+    harness = Harness(database, safety, (UNLISTED_PAGE, SECOND_PAGE))
+    await harness.run()
+    event = next(
+        event
+        for event in harness.sessions()[0].events
+        if event.event_type is EventType.SEARCH_OBSERVED
     )
-    assert blocked.data == {"blocked_url": "https://other-shop.example/page", "used_url": TARGET}
+    assert event.data["pages_walked"] == 2
+    assert "after 2 of 5 result pages" in event.message
 
 
-# -- not listed ---------------------------------------------------------------------- #
-async def test_target_not_listed_is_a_result_not_an_error(harness: Harness) -> None:
-    harness.rank.position = None
+async def test_the_walk_stops_at_the_planned_number_of_pages(harness: Harness) -> None:
+    """A budget of one page is a promise to Google as much as a search setting."""
+    many = [UNLISTED_PAGE] * 6 + [SECOND_PAGE]
+    harness.engine.pages = many
+    await harness.run(make_plan(max_search_pages=2))
+    assert harness.engine.next_requests == [1]
+    assert harness.sessions()[0].status is SessionStatus.TARGET_NOT_FOUND
+
+
+async def test_a_page_that_offers_no_next_link_ends_the_walk(
+    database: Database, safety: DomainSafetyService
+) -> None:
+    harness = Harness(database, safety, (UNLISTED_PAGE,))
+    summary = await harness.run()
+    assert summary.target_not_found == 1
+    assert harness.engine.calls.count("next_results_page") == 0
+
+
+# -- not listed ------------------------------------------------------------------------- #
+async def test_a_site_the_results_do_not_contain_is_a_finding_not_an_error(
+    harness: Harness,
+) -> None:
+    harness.engine.pages = [UNLISTED_PAGE]
     summary = await harness.run()
     assert (summary.target_not_found, summary.failed) == (1, 0)
     record = harness.sessions()[0]
@@ -438,25 +526,188 @@ async def test_target_not_listed_is_a_result_not_an_error(harness: Harness) -> N
     assert record.state is SessionState.COMPLETED and record.error_type is None
     assert harness.events() == [
         EventType.SESSION_STARTED,
+        EventType.BROWSER_STARTED,
+        EventType.KEYWORD_ENTERED,
         EventType.SEARCH_OBSERVED,
         EventType.TARGET_NOT_FOUND,
         EventType.SESSION_COMPLETED,
     ]
-    # no page existed, so there was nothing to photograph either
-    assert not [call for call in harness.engine.calls if call.startswith("screenshot:")]
+    # Google's page is read, never photographed, and the tab is blanked on the way out.
+    assert harness.engine.screenshot_calls == []
     assert harness.engine.opened == []
+    assert harness.engine.scopes == ["open", "close"]
     assert harness.observer.positions == [None]
 
 
-# -- direct visits -------------------------------------------------------------------- #
-async def test_direct_visit_opens_the_target_without_reading_the_ranking(harness: Harness) -> None:
-    summary = await harness.run(direct_plan())
+async def test_a_journey_that_found_nothing_still_closes_the_scope_and_the_session(
+    harness: Harness,
+) -> None:
+    """The ``finally`` that keeps the tab clean must run even when the walk fails."""
+    harness.engine.pages = [UNLISTED_PAGE]
+    await harness.run()
+    assert harness.engine.calls[-2:] == ["end_session", "close"]
+    assert harness.engine.calls.index("close_search_scope") > harness.engine.calls.index("search")
+
+
+# -- the pages the journey must never touch ---------------------------------------------- #
+async def test_google_is_never_photographed_even_though_the_journey_ends_with_a_shot(
+    harness: Harness,
+) -> None:
+    """The only pages a session stores are the ones the *allowlist* covers.
+
+    The search scope stays open until the click has landed, so the rule cannot be
+    "no screenshots while the scope is open" - it is "never a page of the search
+    engine", which is what the tab's own address says at the moment of capture.
+    """
+    await harness.run()
+    assert harness.engine.screenshot_calls == ["screenshot:TARGET_OPENED", "screenshot:SESSION_END"]
+    assert [url for url, _ in harness.engine.shots] == ["https://shop.example/handmade-mugs"] * 2
+    assert all("google.com" not in url for url, _ in harness.engine.shots)
+
+
+async def test_a_result_that_escapes_the_allowlist_fails_the_click(harness: Harness) -> None:
+    """The landing page is checked; a click that ends up elsewhere is a failure."""
+    harness.engine.fail_at["click_result"] = SafetyViolationError(
+        "Navigation to a non-approved address was blocked."
+    )
+    summary = await harness.run()
+    assert summary.failed == 1
+    record = harness.sessions()[0]
+    assert record.error_type == "SafetyViolationError"
+    assert EventType.SAFETY_BLOCKED in harness.events()
+    # One iteration, one failure, one picture of the page that went wrong.
+    assert harness.engine.screenshot_calls == ["screenshot:ERROR"]
+
+
+async def test_a_result_on_an_unapproved_subpage_of_the_site_is_still_visited(
+    harness: Harness,
+) -> None:
+    """A blog on the approved host is the approved site: the click is fine."""
+    harness.engine.pages = [
+        page(result("Mug care", "https://shop.example/blog/care", 0)) + FIRST_PAGE[3:]
+    ]
+    await harness.run()
+    assert harness.engine.clicks[0]["position"] == 1
+
+
+# -- which page is opened --------------------------------------------------------------- #
+async def test_the_page_google_listed_is_the_page_the_click_opens(harness: Harness) -> None:
+    await harness.run()
+    assert harness.engine.current_url == "https://shop.example/handmade-mugs"
+    assert harness.observer.pages == ["https://shop.example/handmade-mugs"]
+    assert EventType.SAFETY_BLOCKED not in harness.events()
+
+
+async def test_a_listed_page_outside_the_allowlist_falls_back_to_the_approved_origin(
+    harness: Harness,
+) -> None:
+    """Google may rank a host the user never approved; the journey visits the origin it may."""
+    harness.engine.pages = [page(result("Shop", "https://other-shop.example/page", 0))]
+    await harness.run(make_plan(target_domain="other-shop.example"))
+    record = harness.sessions()[0]
+    blocked = next(e for e in record.events if e.event_type is EventType.SAFETY_BLOCKED)
+    assert blocked.data == {
+        "blocked_url": "https://other-shop.example/page",
+        "used_url": TARGET,
+    }
+
+
+async def test_every_result_the_page_yielded_carries_the_node_it_was_read_from(
+    harness: Harness,
+) -> None:
+    """A numbered result is a clickable one, because both come from the same pass.
+
+    A read that reports no anchor for a block still numbers it - by the position of
+    the link the page listed - so a journey can never end up holding "position 4"
+    with nothing to click. That fallback is what makes the click safe to plan.
+    """
+    harness.engine.pages = [[("Handmade mugs", TARGET, 7)]]
+    await harness.run()
+    assert harness.engine.clicks == [{"position": 1, "anchor": 7, "from": f"{GOOGLE_PAGE}?start=0"}]
+    assert harness.sessions()[0].target_position == 1
+
+
+async def test_the_landing_url_of_the_click_is_what_gets_recorded(harness: Harness) -> None:
+    """Google's wrapper redirects; the record says where the tab ended up."""
+    harness.engine.landing = "https://shop.example/handmade-mugs?utm_source=google"
+    await harness.run()
+    event = next(
+        e
+        for e in harness.sessions()[0].events
+        if e.event_type is EventType.RESULT_CLICKED  # the URL the tab reports
+    )
+    assert event.data["url"] == "https://shop.example/handmade-mugs?utm_source=google"
+    assert event.data["href"] == "https://shop.example/handmade-mugs"
+
+
+# -- what the page showed, stored --------------------------------------------------------- #
+async def test_the_snapshot_holds_the_page_the_journey_read(database: Database) -> None:
+    allowed = [AllowedOrigin("shop.example")]
+    long_page = FIRST_PAGE + page(
+        *[(f"Filler {n}", f"https://filler{n}.example/page", n + 3) for n in range(1, 11)]
+    )
+    harness = Harness(database, DomainSafetyService(lambda: list(allowed)), (long_page,))
+    await harness.run(make_plan(requested_results=40))
+    snapshot = harness.sessions()[0].settings_snapshot
+    assert snapshot["observed_provider"] == "google-browser"
+    assert snapshot["observed_result_count"] == 13
+    assert snapshot["observed_pages"] == 1
+    assert snapshot["mode"] == MODE_BROWSER
+    assert snapshot["max_search_pages"] == 5
+    # A long page is stored up to the limit, which is what keeps a session row
+    # readable in the UI; the full list stays in the observation.
+    assert len(snapshot["observed_results"]) == SNAPSHOT_RESULT_LIMIT
+    assert snapshot["observed_results"][0] == {
+        "position": 1,
+        "title": "Ceramic Mug Studio",
+        "url": "https://other.example/mugs",
+    }
+    assert snapshot["seed"] == 1234
+
+
+async def test_the_journal_stores_the_observation_the_session_points_at(
+    database: Database, safety: DomainSafetyService
+) -> None:
+    """The observation is the evidence: one row for the page, one per result."""
+    harness = Harness(database, safety, (FIRST_PAGE,), journal=True)
+    await harness.run()
+    record = harness.sessions()[0]
+    assert record.observation_id is not None
+    with database.session_scope() as session:
+        observation = session.get(SearchObservation, record.observation_id)
+        assert observation is not None
+        assert (observation.query, observation.provider) == (
+            "handmade ceramic mugs",
+            "google-browser",
+        )
+        assert (observation.target_found, observation.target_position) == (True, 2)
+        assert [result.position for result in observation.results] == [1, 2, 3]
+        # What is stored is what the page contained, Google's own links excluded.
+        assert observation.results[0].url == "https://other.example/mugs"
+
+
+async def test_a_walk_that_found_the_target_on_page_two_stores_both_pages(
+    database: Database, safety: DomainSafetyService
+) -> None:
+    harness = Harness(database, safety, (UNLISTED_PAGE, SECOND_PAGE), journal=True)
+    await harness.run()
+    record = harness.sessions()[0]
+    with database.session_scope() as session:
+        observation = session.get(SearchObservation, record.observation_id)
+        assert observation is not None
+        assert observation.target_position == 5
+        assert [result.position for result in observation.results][-2:] == [4, 5]
+
+
+# -- direct visits ------------------------------------------------------------------------ #
+async def test_a_direct_journey_never_opens_a_search_engine(harness: Harness) -> None:
+    summary = await harness.run(make_plan(mode=MODE_DIRECT))
     assert (summary.completed, summary.failed) == (1, 0)
-    assert harness.rank.calls == []  # the observation already happened, on the research page
+    assert harness.engine.searches == [] and harness.engine.clicks == []
+    assert harness.engine.scopes == []
     assert harness.engine.opened == [TARGET]
     assert harness.events() == [
         EventType.SESSION_STARTED,
-        EventType.SEARCH_OBSERVED,
         EventType.TARGET_FOUND,
         EventType.BROWSER_STARTED,
         EventType.TARGET_OPENED,
@@ -467,63 +718,103 @@ async def test_direct_visit_opens_the_target_without_reading_the_ranking(harness
         EventType.SESSION_COMPLETED,
     ]
     record = harness.sessions()[0]
-    assert (record.target_found, record.target_position, record.results_count) == (True, 6, 10)
-    assert harness.observer.positions == [6]
-
-
-async def test_a_local_site_is_visited_without_any_rank_claim(harness: Harness) -> None:
-    summary = await harness.run(
-        make_plan(
-            mode=MODE_DIRECT,
-            provider="",
-            observation_id=None,
-            observed_position=None,
-            observed_result_count=None,
-        )
-    )
-    assert summary.completed == 1
-    assert harness.rank.calls == []
-    assert EventType.SEARCH_OBSERVED not in harness.events()
-    record = harness.sessions()[0]
-    assert (record.status, record.target_found, record.target_position) == (
-        SessionStatus.COMPLETED,
+    assert (record.target_found, record.target_position, record.results_count) == (
         True,
         None,
+        None,
     )
-    # "no position" must not be shown as "not listed", which would be a claim about Google
+    # A local target has no ranking to claim, so no position is reported at all.
     assert harness.observer.positions == []
 
 
-# -- failures ------------------------------------------------------------------------- #
-async def test_provider_failure_fails_the_session_without_a_browser(harness: Harness) -> None:
-    harness.rank.error = GoogleQuotaError("Daily quota exceeded for the project.")
+async def test_a_direct_journey_starts_the_browser_under_its_own_state(harness: Harness) -> None:
+    await harness.run(make_plan(mode=MODE_DIRECT))
+    assert harness.observer.states == [
+        SessionState.INITIALIZING,
+        SessionState.TARGET_FOUND,
+        SessionState.STARTING_BROWSER,
+        SessionState.OPENING_TARGET,
+        SessionState.DWELLING,
+        SessionState.CAPTURING_RESULT,
+        SessionState.COMPLETED,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("environment", "listed"),
+    [
+        (Environment.LOCAL, False),
+        (Environment.CONTROLLED_TEST, True),
+        (Environment.STAGING, True),
+        (Environment.DEVELOPMENT, True),
+    ],
+)
+def test_only_a_site_google_cannot_list_skips_the_search_step(
+    environment: Environment, listed: bool
+) -> None:
+    """A local target is visited; every other environment has to be searched for.
+
+    Asking Google to rank something on this computer would spend a query to learn
+    what is already known, and would make the bundled demo unusable without a key -
+    so a local site is the one case where no ranking is claimed.
+    """
+    from src.automation.plan_factory import skips_rank_observation
+    from src.database.models import TargetSite
+
+    site = TargetSite(
+        display_name="Site",
+        base_url="https://shop.example/",
+        domain="shop.example",
+        environment=environment,
+        approved_for_automation=True,
+    )
+    assert skips_rank_observation(site) is (not listed)
+
+
+# -- failures --------------------------------------------------------------------------- #
+async def test_a_refusal_by_google_fails_the_session_without_a_finding(harness: Harness) -> None:
+    """A blocked page is not "not listed": a session that could not look claims nothing."""
+    harness.engine.search_fails = SearchError("Google answered with a robot check.")
     summary = await harness.run(make_plan(iterations=2))
     assert (summary.failed, summary.completed) == (2, 0)
     record = harness.sessions()[0]
-    assert record.error_type == "GoogleQuotaError"
-    assert "quota" in record.error_message
-    assert harness.engine.opened == [] and "start_session" not in harness.engine.calls
+    assert record.error_type == "SearchError"
+    assert "robot check" in record.error_message
+    assert (record.target_found, record.target_position) == (None, None)
+    assert harness.engine.opened == []
+    # Two iterations, each refused, each with its own evidence.
+    assert harness.engine.screenshot_calls == ["screenshot:ERROR", "screenshot:ERROR"]
+    # The scope that was opened is closed even though the journey died inside it.
+    assert harness.engine.scopes == ["open", "close", "open", "close"]  # one pair per try
     assert harness.events()[-1] is EventType.SESSION_FAILED
 
 
-async def test_failure_after_the_ranking_is_recorded_and_the_run_continues(
+async def test_a_missing_search_step_is_reported_as_a_configuration_problem(
+    harness: Harness,
+) -> None:
+    """No search step means no answer, and an invented position would be worse than none."""
+    summary = await harness.runner_without_search().run_plan(make_plan())
+    assert summary.failed == 1
+    record = harness.sessions()[0]
+    assert record.error_type == "InvalidConfigurationError"
+    assert "search step" in record.error_message
+    assert harness.engine.opened == []
+    # The scope was opened for the step and closed by the ``finally`` that has to
+    # run whatever the search step does with it.
+    assert harness.engine.scopes == ["open", "close"]
+
+
+async def test_a_page_that_cannot_be_opened_is_reported_as_navigation_failure(
     harness: Harness,
 ) -> None:
     harness.engine.fail_at["open_url"] = NavigationError("the page did not load")
-    summary = await harness.run(make_plan(iterations=3))
+    summary = await harness.run(make_plan(iterations=3, mode=MODE_DIRECT))
     assert (summary.failed, summary.completed, summary.total) == (3, 0, 3)
-    assert len(harness.sessions()) == 3
     record = harness.sessions()[0]
     assert (record.status, record.state) == (SessionStatus.FAILED, SessionState.FAILED)
     assert (record.error_type, record.error_message) == ("NavigationError", "the page did not load")
-    assert record.target_found is True and record.target_position == 3  # the ranking still counts
-    assert harness.events()[-3:] == [
-        EventType.ERROR,
-        EventType.SCREENSHOT_CAPTURED,
-        EventType.SESSION_FAILED,
-    ]
+    assert record.target_found is True and record.target_position is None
     assert harness.engine.calls.count("end_session") == 3
-    assert len(harness.rank.calls) == 3  # every iteration asks Google again
 
 
 async def test_recovery_after_a_failed_iteration(harness: Harness) -> None:
@@ -534,31 +825,33 @@ async def test_recovery_after_a_failed_iteration(harness: Harness) -> None:
         if attempts["n"] == 1:
             raise NavigationError("first one fails")
 
-    harness.engine.hooks["open_url"] = flaky
+    harness.engine.hooks["click_result"] = flaky
     summary = await harness.run(make_plan(iterations=2))
     assert (summary.failed, summary.completed) == (1, 1)
     assert [s.status for s in harness.sessions()] == [SessionStatus.FAILED, SessionStatus.COMPLETED]
 
 
-async def test_unexpected_exception_does_not_crash_the_runner(harness: Harness) -> None:
-    harness.rank.error = ZeroDivisionError("bug")
+async def test_an_unexpected_exception_does_not_crash_the_runner(harness: Harness) -> None:
+    harness.engine.search_fails = ZeroDivisionError("bug")
     summary = await harness.run(make_plan(iterations=2))
     assert summary.failed == 2
     record = harness.sessions()[0]
     assert record.error_type == "ZeroDivisionError" and "Unexpected error" in record.error_message
 
 
-async def test_browser_launch_failure_aborts_the_remaining_iterations(harness: Harness) -> None:
+async def test_a_browser_that_will_not_launch_aborts_the_remaining_iterations(
+    harness: Harness,
+) -> None:
     harness.engine.fail_at["start_session"] = BrowserLaunchError("Chromium is missing")
     summary = await harness.run(make_plan(iterations=5))
     assert (summary.failed, summary.total) == (1, 1)
     assert harness.engine.calls.count("start_session") == 1
 
 
-async def test_unapproved_target_is_blocked_before_google_is_asked(harness: Harness) -> None:
+async def test_an_unapproved_target_is_blocked_before_google_is_asked(harness: Harness) -> None:
     summary = await harness.run(make_plan(target_url="https://not-approved.example/"))
     assert summary.failed == 1
-    assert harness.rank.calls == []  # no query is spent on a site the user may not automate
+    assert harness.engine.searches == []  # no query is spent on a site the user may not automate
     assert not {"start_session", "open_url"} & set(harness.engine.calls)
     record = harness.sessions()[0]
     assert record.error_type == "SafetyViolationError"
@@ -567,14 +860,13 @@ async def test_unapproved_target_is_blocked_before_google_is_asked(harness: Harn
 
 async def test_a_public_search_engine_can_never_be_a_target(harness: Harness) -> None:
     summary = await harness.run(make_plan(target_url="https://www.google.com/"))
-    assert summary.failed == 1 and "start_session" not in harness.engine.calls
+    assert summary.failed == 1 and harness.engine.searches == []
     assert "public search engine" in harness.sessions()[0].error_message
 
 
 async def test_approval_revoked_between_iterations_stops_the_next_one(database: Database) -> None:
     allowed = [AllowedOrigin("shop.example")]
-    safety = DomainSafetyService(lambda: list(allowed))
-    harness = Harness(database, safety)
+    harness = Harness(database, DomainSafetyService(lambda: list(allowed)))
 
     first = await harness.runner().run_iteration(make_plan(iterations=2), 1, "run")
     assert first.status is SessionStatus.COMPLETED
@@ -583,7 +875,7 @@ async def test_approval_revoked_between_iterations_stops_the_next_one(database: 
     assert second.status is SessionStatus.FAILED and second.error_type == "SafetyViolationError"
 
 
-# -- dwell, interactions and observers ------------------------------------------------- #
+# -- dwell, interactions and observers ---------------------------------------------------- #
 async def test_scrolls_are_performed_and_counted(harness: Harness) -> None:
     plan = make_plan(
         min_dwell_seconds=1.2, max_dwell_seconds=1.2, scroll_enabled=True, max_scroll_actions=4
@@ -606,14 +898,26 @@ async def test_scroll_disabled_means_no_interactions(harness: Harness) -> None:
     assert "interaction" not in harness.engine.calls
 
 
-async def test_observer_follows_the_run(harness: Harness) -> None:
+async def test_a_failing_interaction_ends_the_session(harness: Harness) -> None:
+    harness.engine.fail_at["interaction"] = SafetyViolationError("the page left the approved scope")
+    plan = make_plan(
+        min_dwell_seconds=1.2, max_dwell_seconds=1.2, scroll_enabled=True, max_scroll_actions=4
+    )
+    summary = await harness.run(plan)
+    assert summary.failed == 1
+    assert harness.sessions()[0].error_type == "SafetyViolationError"
+
+
+async def test_the_observer_follows_the_run(harness: Harness) -> None:
     await harness.run()
-    obs = harness.observer
-    assert obs.states[0] is SessionState.INITIALIZING and obs.states[-1] is SessionState.COMPLETED
-    assert obs.positions == [3]
-    assert obs.pages == [TARGET]
-    assert obs.ticks[0] == (0.5, 0.5) and obs.ticks[-1][0] == 0
-    assert [r.status for r in obs.finished] == [SessionStatus.COMPLETED]
+    observer = harness.observer
+    assert observer.states[0] is SessionState.INITIALIZING
+    assert observer.states[-1] is SessionState.COMPLETED
+    assert observer.positions == [2]
+    assert observer.pages == ["https://shop.example/handmade-mugs"]
+    assert observer.ticks[0] == (0.5, 0.5) and observer.ticks[-1][0] == 0
+    assert [result.status for result in observer.finished] == [SessionStatus.COMPLETED]
+    assert observer.previews, "a live view is expected while a page is open"
 
 
 async def test_a_broken_observer_cannot_break_the_run(harness: Harness) -> None:
@@ -621,18 +925,18 @@ async def test_a_broken_observer_cannot_break_the_run(harness: Harness) -> None:
     assert summary.completed == 1
 
 
-async def test_same_seed_gives_the_same_dwell_and_schedule(harness: Harness) -> None:
+async def test_the_same_seed_gives_the_same_dwell_and_schedule(harness: Harness) -> None:
     plan = make_plan(
         min_dwell_seconds=0.2, max_dwell_seconds=0.9, scroll_enabled=True, max_scroll_actions=3
     )
     for _ in range(2):
         await harness.runner().run_iteration(plan, 1, "run")
-    first, second = (s.settings_snapshot for s in harness.sessions())
+    first, second = (record.settings_snapshot for record in harness.sessions())
     assert first["chosen_dwell_seconds"] == second["chosen_dwell_seconds"]
     assert first["scheduled_actions"] == second["scheduled_actions"]
 
 
-async def test_snapshot_makes_the_session_reproducible(harness: Harness) -> None:
+async def test_the_snapshot_makes_a_session_reproducible(harness: Harness) -> None:
     plan = make_plan(
         scroll_enabled=True,
         max_scroll_actions=4,
@@ -651,12 +955,26 @@ async def test_snapshot_makes_the_session_reproducible(harness: Harness) -> None
     assert "s3cret" not in str(snapshot)
 
 
-# -- stop and pause -------------------------------------------------------------------- #
-async def test_stop_during_dwell_ends_the_session_gracefully(harness: Harness) -> None:
+# -- the fence's news reaches the timeline ------------------------------------------------- #
+async def test_requests_the_guard_blocked_are_written_as_events(harness: Harness) -> None:
+    """A silent block would be a lie by omission, so the run reports every one."""
+    harness.engine.blocked = [{"url": "https://tracker.example/pixel.png", "reason": "not_allowed"}]
+    await harness.run()
+    blocked = [
+        event
+        for event in harness.sessions()[0].events
+        if event.event_type is EventType.SAFETY_BLOCKED
+    ]
+    assert any("tracker.example" in event.message for event in blocked)
+    assert harness.engine.blocked == []  # drained, so nothing is reported twice
+
+
+# -- stop and pause ---------------------------------------------------------------------- #
+async def test_a_stop_during_the_dwell_ends_the_session_gracefully(harness: Harness) -> None:
     async def stop_when_opened() -> None:
         asyncio.get_running_loop().call_later(0.3, harness.control.stop)
 
-    harness.engine.hooks["open_url"] = stop_when_opened
+    harness.engine.hooks["click_result"] = stop_when_opened
     plan = make_plan(min_dwell_seconds=20, max_dwell_seconds=20, iterations=3)
     started = time.monotonic()
     summary = await harness.run(plan)
@@ -667,24 +985,30 @@ async def test_stop_during_dwell_ends_the_session_gracefully(harness: Harness) -
     assert record.finished_at is not None and record.error_type is None
     assert harness.events()[-1] is EventType.SESSION_STOPPED
     assert harness.engine.calls[-2:] == ["end_session", "close"]
+    # A stopped journey still leaves Google's tab behind cleanly.
+    assert harness.engine.scopes == ["open", "close"]
 
 
-async def test_stop_after_the_ranking_never_opens_a_page(harness: Harness) -> None:
-    """The stop is honoured at the next safe boundary, which is before the browser starts."""
-    harness.rank.on_answer = harness.control.stop
+async def test_a_stop_after_the_search_never_clicks(harness: Harness) -> None:
+    """The stop is honoured at the next safe boundary, which is before the click."""
+
+    async def stop_now() -> None:
+        harness.control.stop()
+
+    harness.engine.hooks["search"] = stop_now
     summary = await harness.run(make_plan(min_dwell_seconds=20, max_dwell_seconds=20))
     assert summary.stopped == 1
-    assert "open_url" not in harness.engine.calls
+    assert "click_result" not in harness.engine.calls
 
 
-async def test_stop_before_start_runs_nothing(harness: Harness) -> None:
+async def test_a_stop_before_the_start_runs_nothing(harness: Harness) -> None:
     harness.control.stop()
     summary = await harness.run(make_plan(iterations=3))
     assert summary.total == 0 and harness.sessions() == []
     assert harness.engine.calls == ["close"]
 
 
-async def test_stop_during_the_delay_between_iterations(harness: Harness) -> None:
+async def test_a_stop_during_the_delay_between_iterations(harness: Harness) -> None:
     asyncio.get_running_loop().call_later(1.0, harness.control.stop)
     plan = make_plan(iterations=3, delay_between_iterations=30)
     started = time.monotonic()
@@ -711,14 +1035,33 @@ async def test_pause_and_resume_do_not_count_as_dwell_time(harness: Harness) -> 
 
     record = harness.sessions()[0]
     assert record.status is SessionStatus.COMPLETED
-    assert 0.95 <= record.actual_dwell_seconds <= 1.4  # pause excluded
-    assert wall >= 1.9  # but it really did wait
+    assert 0.95 <= record.actual_dwell_seconds <= 1.4  # the paused minute is not dwell
+    assert wall >= 1.9  # but the run really did wait
     events = harness.events()
     assert events.count(EventType.PAUSED) == 1 and events.count(EventType.RESUMED) == 1
     assert events.index(EventType.PAUSED) < events.index(EventType.RESUMED)
 
 
-async def test_stop_while_paused(harness: Harness) -> None:
+async def test_a_pause_waits_for_the_click_it_interrupted(harness: Harness) -> None:
+    """A pause is honoured at a boundary, not in the middle of a page.
+
+    The request arrives while the result is being clicked, so the pause is taken at
+    the next checkpoint - the state change after the click - and the session then
+    finishes as if it had never been interrupted.
+    """
+
+    async def pause_now() -> None:
+        harness.control.pause()
+        asyncio.get_running_loop().call_later(0.3, harness.control.resume)
+
+    harness.engine.hooks["click_result"] = pause_now
+    await harness.run(make_plan(min_dwell_seconds=1.0, max_dwell_seconds=1.0))
+    states = harness.observer.states
+    assert states.index(SessionState.PAUSED) == states.index(SessionState.CLICKING_RESULT) + 1
+    assert states[-1] is SessionState.COMPLETED
+
+
+async def test_a_stop_while_paused(harness: Harness) -> None:
     async def pause_then_stop() -> None:
         await asyncio.sleep(0.3)
         harness.control.pause()
@@ -734,175 +1077,37 @@ async def test_stop_while_paused(harness: Harness) -> None:
     assert EventType.PAUSED in harness.events()
 
 
-async def test_revoked_approval_during_dwell_fails_the_session_at_once(database: Database) -> None:
+async def test_revoked_approval_during_the_dwell_fails_the_session_at_once(
+    database: Database,
+) -> None:
     allowed = [AllowedOrigin("shop.example")]
-    safety = DomainSafetyService(lambda: list(allowed))
-    harness = Harness(database, safety)
+    harness = Harness(database, DomainSafetyService(lambda: list(allowed)))
 
     async def revoke() -> None:
         asyncio.get_running_loop().call_later(0.3, allowed.clear)
 
-    harness.engine.hooks["open_url"] = revoke
+    harness.engine.hooks["click_result"] = revoke
     started = time.monotonic()
     summary = await harness.run(make_plan(min_dwell_seconds=30, max_dwell_seconds=30))
     assert time.monotonic() - started < 3
     assert summary.failed == 1
     record = harness.sessions()[0]
     assert record.error_type == "SafetyViolationError" and record.state is SessionState.FAILED
-    assert (
-        EventType.SAFETY_BLOCKED in harness.events()
-        and EventType.DWELL_COMPLETED not in harness.events()
-    )
+    assert EventType.SAFETY_BLOCKED in harness.events()
+    assert EventType.DWELL_COMPLETED not in harness.events()
 
 
-# -- which channel a plan uses ---------------------------------------------------------- #
-def test_a_stored_profile_decides_the_channel() -> None:
-    from src.automation.plan_factory import search_channel
-
-    assert search_channel(SearchProfile.GOOGLE_BROWSER) == MODE_BROWSER
-    assert search_channel(SearchProfile.GOOGLE_API) == MODE_GOOGLE
-    # A value left by a version that had only one channel means the one with no key.
-    assert search_channel("GOOGLE") == MODE_BROWSER
-
-
-async def test_the_router_refuses_only_the_channel_that_is_not_configured(
-    harness: Harness,
-) -> None:
-    """A run with no API key still runs every browser-channel scenario."""
-    from src.automation.rank_observer import RankObserverRouter
-
-    class NoKey:
-        provider_name = "google-custom-search"
-        credentials_ready = False
-
-    router = RankObserverRouter(NoKey(), GooglePageRankObserver())  # type: ignore[arg-type]
-    router.check([make_plan(mode=MODE_BROWSER), make_plan(mode=MODE_DIRECT)])
-    with pytest.raises(InvalidConfigurationError, match="browser channel"):
-        router.check([make_plan(mode=MODE_GOOGLE)])
-    assert router.credentials_ready is True  # the run as a whole can be done
-
-    empty = RankObserverRouter(None, None)
-    with pytest.raises(InvalidConfigurationError, match="browser engine"):
-        empty.check([make_plan(mode=MODE_BROWSER)])
-
-
-# -- the browser channel: the page is the source ---------------------------------------- #
-async def test_the_browser_channel_reads_the_results_page_before_visiting(harness: Harness) -> None:
-    """One navigation to Google's page, read, then the approved address - as chosen."""
-    harness.engine.search_items = listed_items()
-    summary = await harness.browser_runner().run_plan(browser_plan())
-    assert (summary.completed, summary.failed) == (1, 0)
-
-    assert harness.engine.search_urls == [
-        search_url("handmade ceramic mugs", "en", "us", 10),
-    ]
-    # Google's page is read by the search step alone; open_url never sees it, and the
-    # link the page reported is what the visit uses.
-    assert harness.engine.opened == ["https://shop.example/handmade-mugs"]
-
-    record = harness.sessions()[0]
-    assert (record.target_found, record.target_position, record.results_count) == (True, 2, 3)
-    assert record.settings_snapshot["observed_provider"] == "google-browser"
-
-
-async def test_the_browser_channel_builds_the_query_from_the_plan_settings(
-    harness: Harness,
-) -> None:
-    """Same knobs as the API channel: language, country and the number asked for."""
-    harness.engine.search_items = listed_items()
-    await harness.browser_runner().run_plan(browser_plan(requested_results=100))
-    url = harness.engine.search_urls[0]
-    assert url.startswith("https://www.google.com/search?")
-    assert "hl=en" in url and "gl=us" in url and "num=100" in url
-    assert "q=handmade+ceramic+mugs" in url
-
-
-async def test_the_browser_starts_inside_the_search_step_for_the_browser_channel(
-    harness: Harness,
-) -> None:
-    """The browser is the instrument here, so it exists before the page is read."""
-    harness.engine.search_items = listed_items()
-    await harness.browser_runner().run_plan(browser_plan())
-    states = harness.observer.states
-    assert states.index(SessionState.OPENING_SEARCH) < states.index(SessionState.SEARCHING)
-    assert "start_session" in harness.engine.calls
-    assert harness.engine.calls.index("start_session") < harness.engine.calls.index(
-        "read_search_page"
-    )
-    # STARTING_BROWSER is not announced twice: the visit reuses the open context.
-    assert states.count(SessionState.STARTING_BROWSER) == 0
-    assert EventType.BROWSER_STARTED.value in harness.observer.events
-
-
-async def test_a_site_missing_from_the_page_ends_as_not_found_without_a_screenshot(
-    harness: Harness,
-) -> None:
-    """The finding is the result; Google's page is read, never stored as evidence."""
-    harness.engine.search_items = [("Someone else", "https://elsewhere.example/")]
-    summary = await harness.browser_runner().run_plan(browser_plan())
-    assert summary.target_not_found == 1
-
-    states = harness.observer.states
-    assert states == [
-        SessionState.INITIALIZING,
-        SessionState.OPENING_SEARCH,
-        SessionState.SEARCHING,
-        SessionState.ANALYZING_RESULTS,
-        SessionState.TARGET_NOT_FOUND,
-        SessionState.CAPTURING_RESULT,
-        SessionState.COMPLETED,
-    ]
-    assert "screenshot:session_end" not in harness.engine.calls
-    assert harness.engine.opened == []
-    assert harness.observer.positions == [None]
-
-
-async def test_a_captcha_from_google_fails_the_session_with_its_own_error(
-    harness: Harness,
-) -> None:
-    """No fallback and no workaround: the refusal is what the report shows."""
-    harness.engine.search_fails = SearchError("Google answered with a human check.")
-    summary = await harness.browser_runner().run_plan(browser_plan())
-    assert summary.failed == 1
-    record = harness.sessions()[0]
-    assert record.error_type == "SearchError"
-    assert "human check" in record.error_message
-    assert harness.engine.opened == []
-
-
-async def test_the_api_channel_still_needs_no_browser_for_the_ranking(
-    harness: Harness,
-) -> None:
-    """The two channels stay separate: this one reads a provider, not a page."""
-    summary = await harness.run(make_plan(mode=MODE_GOOGLE))
-    assert summary.completed == 1
-    assert harness.engine.search_urls == []
-    assert harness.engine.calls.count("read_search_page") == 0
-    states = harness.observer.states
-    assert states.index(SessionState.SEARCHING) < states.index(SessionState.STARTING_BROWSER)
-
-
-# -- several iterations --------------------------------------------------------------- #
+# -- several iterations ------------------------------------------------------------------- #
 async def test_iterations_are_numbered_and_share_a_run_id(harness: Harness) -> None:
     summary = await harness.runner().run_plan(replace(make_plan(iterations=3)), run_id="run-42")
     assert summary.completed == 3
     sessions = harness.sessions()
-    assert [s.iteration for s in sessions] == [1, 2, 3]
-    assert {s.total_iterations for s in sessions} == {3}
-    assert {s.run_id for s in sessions} == {"run-42"}
+    assert [session.iteration for session in sessions] == [1, 2, 3]
+    assert {session.total_iterations for session in sessions} == {3}
+    assert {session.run_id for session in sessions} == {"run-42"}
     assert (
         harness.engine.calls.count("start_session") == 3
         and harness.engine.calls.count("close") == 1
     )
-
-
-async def test_a_missing_rank_observer_is_reported_as_a_configuration_problem(
-    harness: Harness,
-) -> None:
-    """No provider means no answer, and an invented position would be worse than none."""
-    summary = await harness.runner_without_provider().run_plan(make_plan())
-    assert summary.failed == 1
-    record = harness.sessions()[0]
-    assert record.error_type == "InvalidConfigurationError"
-    assert "search source" in record.error_message
-    assert harness.engine.opened == [] and harness.rank.calls == []
+    # Every iteration asks Google again: the ranking is a fresh reading, not a cached one.
+    assert harness.engine.calls.count("search") == 3

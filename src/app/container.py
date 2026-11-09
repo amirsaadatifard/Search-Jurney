@@ -18,7 +18,6 @@ from src.services.browser_profile_service import BrowserProfileService
 from src.services.config_transfer_service import ConfigTransferService
 from src.services.dashboard_service import DashboardService
 from src.services.demo_service import DemoService
-from src.services.google_research_service import GoogleResearchService
 from src.services.keyword_service import KeywordService
 from src.services.proxy_service import ProxyService
 from src.services.report_service import ReportService
@@ -54,7 +53,6 @@ class AppContainer:
     runs: AutomationRunService
     sessions: SessionService
     reports: ReportService
-    google: GoogleResearchService
     backups: BackupService
     transfer: ConfigTransferService
     demo: DemoService

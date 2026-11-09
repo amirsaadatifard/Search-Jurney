@@ -1,9 +1,9 @@
-"""The bundled sample website, the search-API double and the server manager.
+"""The bundled sample website, the search-page double and the server manager.
 
-The sample site is the only server this application owns, so this file also
-proves the thing the journeys depend on: the search data does *not* come from a
-server of ours but from the provider's API - here a local double of Google's
-documented response format, reached over a real socket.
+Two servers matter to a journey: the sample site, which this application owns,
+and the results page it browses, which it does not. This file proves both halves -
+and that the page double really is laid out like Google's, so the shipped parser
+reads it without a browser in sight.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ from fastapi.testclient import TestClient
 from src.app.constants import LOOPBACK_HOST
 from src.app.container import AppContainer
 from src.app.health import HealthStatus, is_port_available
-from src.automation.models import MODE_BROWSER, MODE_GOOGLE
-from src.domain.enums import SearchProfile
+from src.automation.google_search_page import PageKind, SearchSite, find_target, parse_results
+from src.automation.models import MODE_BROWSER, MODE_DIRECT
+from src.domain.enums import Environment
 from src.domain.schemas import ScenarioInput
 from src.local_servers.common import SECURITY_HEADERS
 from src.local_servers.server_manager import LocalServer, LocalServerManager, ServerStartError
@@ -34,7 +35,7 @@ from src.local_servers.target_site.app import (
 from src.local_servers.target_site.app import (
     SERVICE_NAME as TARGET_SERVICE_NAME,
 )
-from tests.helpers.fake_google import VALID_CX, VALID_KEY, FakeGoogleServer, result_item
+from tests.helpers.fake_google_page import FakeGooglePages, listing
 
 
 def free_port() -> int:
@@ -101,51 +102,81 @@ def test_external_redirect_fixture_points_outside_the_allowlist(
     assert not container.safety.is_allowed(EXTERNAL_TEST_URL)
 
 
-# -- the search API double ------------------------------------------------------- #
-def test_the_double_answers_like_googles_api(fake_google: FakeGoogleServer) -> None:
-    """The shape the provider client parses: ``items``, ``searchInformation``, errors."""
-    fake_google.state.items = [result_item(1, "https://shop.example/"), result_item(2, "x")]
-    with httpx.Client(timeout=5) as client:
-        body = client.get(
-            fake_google.endpoint, params={"key": VALID_KEY, "cx": VALID_CX, "q": "mugs", "num": 10}
-        ).json()
-    assert body["kind"] == "customsearch#search"
-    assert [item["link"] for item in body["items"]] == ["https://shop.example/", "x"]
-    assert body["searchInformation"]["totalResults"] == "2"
+# -- the search-page double ------------------------------------------------------ #
+def the_double_as_a_site(fake_google: FakeGooglePages) -> SearchSite:
+    """The reading code pointed at the double, exactly as a journey points it at Google.
 
-    with httpx.Client(timeout=5) as client:
-        refused = client.get(fake_google.endpoint, params={"key": "nope", "cx": VALID_CX, "q": "x"})
-    assert refused.status_code == 400
-    assert refused.json()["error"]["errors"][0]["reason"] == "keyInvalid"
+    :class:`SearchSite` is what the search step really uses: an entry page, and the
+    answer to "which page is this?". Building one from the fixture's own origin is
+    the whole of the substitution - no Google URL appears anywhere in the test.
+    """
+    return SearchSite(entry=fake_google.origin + "/")
 
 
-def test_the_application_reads_the_ranking_through_the_double(
-    google_container: AppContainer, fake_google: FakeGoogleServer
+def test_the_double_serves_pages_the_parser_reads(fake_google: FakeGooglePages) -> None:
+    """The shipped reading code, pointed at a real HTTP response, without a browser.
+
+    The e2e suite proves Chromium can walk these pages; this proves the *pure* half
+    of the search step agrees with what the double writes out - same URL, same
+    numbering, same answer - so a failing e2e test can be told apart from a failing
+    fixture.
+    """
+    import httpx
+
+    fake_google.set_results(listing("https://shop.example/", positions=(2,), total=4))
+    with httpx.Client(base_url=fake_google.origin, timeout=5) as client:
+        home = client.get("/")
+        results = client.get("/search", params={"q": "handmade mugs"})
+    assert home.status_code == 200 and fake_google.origin in fake_google.scope()["entry"]
+    assert the_double_as_a_site(fake_google).classify(str(results.url), results.text) is (
+        PageKind.SEARCH
+    )
+    assert 'div class="g"' in results.text  # the block the result selectors match
+
+
+def test_the_double_lists_the_target_where_a_test_said_it_would(
+    fake_google: FakeGooglePages,
 ) -> None:
-    """A real HTTP round trip, the real service, the real query - and no browser."""
-    google = google_container.google
-    google.credentials.save(VALID_KEY, VALID_CX)
-    fake_google.state.items = [
-        result_item(1, "https://other1.example/page"),
-        result_item(2, "https://other2.example/page"),
-        result_item(3, "https://shop.example/products"),
-    ]
-    site = google_container.target_sites.create(
-        {
-            "display_name": "Listed shop",
-            "base_url": "https://shop.example/",
-            "environment": "CONTROLLED_TEST",
-            "approved_for_automation": True,
-        }
+    """Position 2 is position 2, in the HTML and in the parsed list alike."""
+    import httpx
+
+    fake_google.set_results(listing("https://shop.example/", positions=(2,), total=4))
+    with httpx.Client(base_url=fake_google.origin, timeout=5) as client:
+        page = client.get("/search", params={"q": "handmade mugs"})
+    html_items = re.findall(r"<a href=\"([^\"]+)\"", page.text)
+    results = parse_results([(title, link) for title, link in fake_google.results])
+    assert "https://shop.example/" in html_items
+    assert find_target(results, "shop.example") is not None
+    assert find_target(results, "shop.example").position == 2
+    assert [item.position for item in results] == [1, 2, 3, 4]
+
+
+def test_a_walled_double_classifies_as_a_wall_not_as_no_results(
+    fake_google: FakeGooglePages,
+) -> None:
+    """A refusal has to look like a refusal to the code that reports it."""
+    import httpx
+
+    fake_google.mode = "blocked"
+    with httpx.Client(base_url=fake_google.origin, timeout=5) as client:
+        page = client.get("/search", params={"q": "handmade mugs"})
+    assert the_double_as_a_site(fake_google).classify(str(page.url), page.text) is (
+        PageKind.BLOCKED
     )
 
-    observation = google.run_search("handmade mugs", site.domain, count=10)
 
-    assert (observation.target_position, observation.result_count) == (3, 3)
-    assert observation.results[2].url == "https://shop.example/products"
-    assert [call["q"] for call in fake_google.state.requests] == ["handmade mugs"]
-    assert fake_google.state.requests[0]["cx"] == VALID_CX
-    assert observation.target_url == "https://shop.example/products"
+def test_the_doubles_scope_and_the_guard_agree(fake_google: FakeGooglePages) -> None:
+    """The fixture's own scope is what lets its pages load - and only those."""
+    from src.services.safety_service import DomainSafetyService, SearchScope
+
+    safety = DomainSafetyService(
+        allowlist_provider=lambda: [], search_scope=SearchScope(**fake_google.scope())
+    )
+    fake_google.set_results(listing("https://shop.example/", positions=(1,), total=1))
+    assert safety.is_search_page(f"{fake_google.origin}/search?q=mugs") is True
+    assert safety.is_search_page(f"{fake_google.origin}/elsewhere") is False
+    assert safety.is_search_page("https://www.google.com/search?q=mugs") is False
+    assert safety.is_allowed("https://shop.example/") is False  # the scope is not an approval
 
 
 # -- server manager (real sockets) ------------------------------------------------ #
@@ -213,10 +244,10 @@ def test_health_check_accepts_ports_served_by_the_application(container: AppCont
 
 
 def test_a_journey_against_a_real_domain_binds_no_local_port(
-    google_container: AppContainer, fake_google: FakeGoogleServer
+    search_container: AppContainer,
 ) -> None:
     """The gate is the page the visit goes to, so a remote site needs no server of ours."""
-    container = google_container
+    container = search_container
     site = container.target_sites.create(
         {
             "display_name": "Remote shop",
@@ -227,16 +258,21 @@ def test_a_journey_against_a_real_domain_binds_no_local_port(
     )
     scenario = container.scenarios.search()[0]
     data = {name: getattr(scenario, name) for name in ScenarioInput.model_fields}
-    fake_google.state.items = [result_item(1, "https://shop.example/")]
 
     assert not container.servers.all_running
-    # Either way of reading the ranking asks Google, not a server of ours.
-    for profile, mode in (
-        (SearchProfile.GOOGLE_API, MODE_GOOGLE),
-        (SearchProfile.GOOGLE_BROWSER, MODE_BROWSER),
-    ):
-        container.scenarios.update(
-            scenario.id, data | {"target_site_id": site.id, "search_profile": profile}
-        )
-        plan = container.runs.build_plans([scenario.id])[0]
-        assert plan.mode == mode and not container.servers.all_running
+    container.scenarios.update(scenario.id, data | {"target_site_id": site.id})
+    plan = container.runs.build_plans([scenario.id])[0]
+    # A site on a real domain searches first, and a local one is visited directly -
+    # and neither answer depends on a server of ours being up.
+    assert plan.mode == MODE_BROWSER
+    local = container.target_sites.create(
+        {
+            "display_name": "Local shop",
+            "base_url": "http://127.0.0.1:8000/",
+            "environment": Environment.LOCAL.value,
+            "approved_for_automation": True,
+        }
+    )
+    container.scenarios.update(scenario.id, data | {"target_site_id": local.id})
+    assert container.runs.build_plans([scenario.id])[0].mode == MODE_DIRECT
+    assert not container.servers.all_running

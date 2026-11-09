@@ -11,12 +11,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Final
 
-from src.app.constants import DEFAULT_SEARCH_RESULTS
+from src.app.constants import DEFAULT_MAX_SEARCH_PAGES, DEFAULT_SEARCH_RESULTS
 from src.domain.enums import ScreenshotKind, SessionState, SessionStatus
 
 # How a journey reaches its target.
-MODE_BROWSER: Final = "browser"  # read Google's own results page in the browser
-MODE_GOOGLE: Final = "google"  # read the real ranking first, then open the target
+MODE_BROWSER: Final = "browser"  # search Google in the browser and click through
 MODE_DIRECT: Final = "direct"  # open the target without a search step
 
 
@@ -96,27 +95,27 @@ class SessionPlan:
     proxy: ProxySettings | None = None
     screenshots: ScreenshotPolicy = ScreenshotPolicy()
     timeout_seconds: int = 30
-    # ``MODE_BROWSER``: read Google's results page in the browser (no key).
-    # ``MODE_GOOGLE``: ask the real search provider where the target ranks, then open it.
-    # ``MODE_DIRECT``: open ``target_url`` directly because a search was already
-    # observed (Google Research mode) or because Google cannot list this site at all.
-    mode: str = MODE_GOOGLE
-    observation_id: int | None = None
-    observed_position: int | None = None
-    observed_result_count: int | None = None
-    provider: str = ""
-    # Query options for the search step (both channels; ``MODE_DIRECT`` ignores them).
+    # ``MODE_BROWSER``: search Google in the browser, walk the result pages and click
+    # the target's link - the real journey, and the only one that needs no key.
+    # ``MODE_DIRECT``: open ``target_url`` directly, because Google cannot list
+    # this site at all (a loopback target), so there is no results page to walk.
+    mode: str = MODE_BROWSER
+    # Query options for the search step (``MODE_DIRECT`` ignores them).
     search_language: str = ""
     search_country: str = ""
     requested_results: int = DEFAULT_SEARCH_RESULTS
+    #: How many result pages one iteration walks before it calls the site "not listed".
+    max_search_pages: int = DEFAULT_MAX_SEARCH_PAGES
 
     @property
     def searches_in_browser(self) -> bool:
-        """Whether the ranking comes from Google's own page instead of from the API.
+        """Whether this journey searches Google in the browser before visiting.
 
-        The one channel that needs a key for nothing - and the one that Google's
-        terms of service do not like, which is why it is a per-scenario choice
-        rather than a default that silently applies to everyone.
+        The only way this application finds a ranking: no key, no quota, and the
+        position is exactly what this browser was shown. It is also the way Google's
+        terms of service do not like, which is why the journey is bounded - one
+        keyword, a handful of pages, a click on a result, nothing else - and why a
+        refusal by Google ends the session instead of being worked around.
         """
         return self.mode == MODE_BROWSER
 
@@ -130,18 +129,27 @@ class SessionPlan:
 
 @dataclass(frozen=True, slots=True)
 class SearchPageRead:
-    """What the browser found when it was asked to read a results page.
+    """What the browser found on one page of results.
 
     ``kind`` is a :class:`~src.automation.google_search_page.PageKind` value:
-    ``search`` carries ``items``, anything else carries an explanation. The
-    items are the raw ``(title, href)`` pairs in page order; numbering them and
-    dropping the non-result links is the parser's job, not the browser's.
+    ``search`` carries ``items``, anything else carries an explanation. The items
+    are the raw ``(title, href, anchor_index)`` triples in page order - numbering
+    them and dropping the non-result links is the parser's job, and the anchor
+    index is what the click later uses, so a result is only ever clicked if it is
+    still the same node that was read.
+
+    ``page_number`` and ``has_next`` describe where this page sits in the walk:
+    a journey that does not find the target on page one only keeps going when
+    ``has_next`` is true.
     """
 
     kind: str
-    items: tuple[tuple[str, str], ...] = ()
+    items: tuple[tuple[str, str, int], ...] = ()
     page_url: str = ""
     text: str = ""
+    page_number: int = 1
+    has_next: bool = False
+    next_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,9 +166,10 @@ class ResultItem:
 class RankObservation:
     """What the real search provider reported about one keyword.
 
-    Produced by a :class:`~src.automation.rank_observer.RankObserver` before the
-    browser is started. ``position`` is ``None`` when the target was not among
-    the results, which is a *finding*, not an error.
+    Produced by :class:`~src.automation.search_walk.GoogleSearchWalk` from the
+    pages the browser actually read. ``position`` is ``None`` when the target was
+    not among the results, which is a *finding*, not an error; ``pages_walked``
+    says how far the walk went before it stopped.
     """
 
     provider: str
@@ -169,6 +178,10 @@ class RankObservation:
     target_url: str = ""
     observation_id: int | None = None
     results: tuple[ResultItem, ...] = ()
+    #: Which result page of the walk the target turned up on (1 = the first page).
+    page_number: int = 1
+    #: Pages walked before the answer, found or not.
+    pages_walked: int = 1
 
 
 @dataclass(frozen=True, slots=True)

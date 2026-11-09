@@ -38,9 +38,13 @@ _DEMO_DESCRIPTION = (
 
 
 def upgrade() -> None:
-    # The update runs before the table is rebuilt, so the new CHECK constraint (if
-    # the database has one) only ever sees values it accepts.
-    op.execute("UPDATE scenarios SET search_profile = 'GOOGLE_BROWSER'")
+    # Only a row that still carried the single value of the old schema is moved; a row
+    # that already named the API keeps that choice. The update runs before the table is
+    # rebuilt, so the new CHECK constraint (if the database has one) only ever sees
+    # values it accepts.
+    op.execute(
+        "UPDATE scenarios SET search_profile = 'GOOGLE_BROWSER' WHERE search_profile = 'GOOGLE'"
+    )
     with op.batch_alter_table("scenarios") as batch_op:
         batch_op.alter_column(
             "search_profile",
@@ -48,10 +52,15 @@ def upgrade() -> None:
             type_=_NEW_PROFILE,
             existing_nullable=False,
         )
-    op.execute(
-        "UPDATE scenarios "
-        f"SET description = '{_DEMO_DESCRIPTION}' "
-        f"WHERE name = '{_DEMO_NAME}' AND description LIKE '%real position first%'"
+    # Bound parameters, not an f-string: this sentence contains an apostrophe, and a
+    # migration that cannot be replayed because of a quote character is a migration
+    # nobody can run.
+    op.get_bind().execute(
+        sa.text(
+            "UPDATE scenarios SET description = :description WHERE name = :name "
+            "AND description LIKE :needle"
+        ),
+        {"description": _DEMO_DESCRIPTION, "name": _DEMO_NAME, "needle": "%real position first%"},
     )
 
 

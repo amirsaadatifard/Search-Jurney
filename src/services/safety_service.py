@@ -4,11 +4,18 @@ Every URL the automation is about to touch goes through
 :class:`DomainSafetyService`. The rules, in order:
 
 1. The URL must be well formed, use ``http``/``https`` and carry no credentials.
-2. Public search engines are refused unconditionally, even if someone managed
+2. A public search engine is never a *target site*, not even if someone managed
    to put one on the allowlist.
 3. The origin must be on the allowlist: an enabled *and* approved target site.
    Search engines are refused before this check, so adding one to the allowlist
    by hand still does not let automation browse it.
+
+The one exception is the journey's own search step: rule 2 and rule 3 do not
+apply while :meth:`DomainSafetyService.search_scope_open` is granted for a URL,
+and only for the pages listed in :class:`SearchScope` - Google's start page and
+its result pages, nothing else. That is what lets the application type a keyword
+into Google's box, walk the result pages and click a result, which is browsing a
+search engine and therefore refused for every other purpose.
 
 The service is pure logic. The allowlist arrives through a callable and DNS
 through an injectable resolver, so every rule is unit-testable offline.
@@ -52,24 +59,32 @@ SEARCH_ENGINE_LABELS: Final = frozenset(
         "seznam",
     }
 )
-# Everything the browser channel may open, as data rather than as a rule spread
-# over the code: one results page, plus the assets that page loads. It is a fixed
-# pair of origins rather than "any search engine" because reading a results page
-# through the browser is a deliberate exception to the rule below, and this keeps
-# it the smallest exception we can make - ``check_url`` still refuses every search
-# engine, and only a URL inside this scope is ever accepted.
+# Everything the search step of a journey may open, as data rather than as a rule
+# spread over the code: Google's start page and its result pages, plus the assets
+# those pages load. It is a fixed set of origins and paths rather than "any search
+# engine" because browsing Google's own pages is a deliberate exception to the rule
+# below, and this keeps it the smallest exception we can make - ``check_url`` still
+# refuses every search engine, and only a URL inside this scope is ever accepted.
 #
-# The values are overridable so a test can point the whole channel at a local
+# ``paths`` is what makes paging and clicking safe: the only google.com addresses
+# the journey may open are the ones Google's own page links to. A result link is
+# never followed *as a google.com URL* - it is unwrapped to its destination first
+# (see :func:`~src.automation.google_search_page.normalize_result_link`) and then
+# judged by the ordinary allowlist rule.
+#
+# The values are overridable so a test can point the whole journey at a local
 # fixture; production never does.
-DEFAULT_SEARCH_ENTRY: Final = "https://www.google.com/search"
+DEFAULT_SEARCH_ENTRY: Final = "https://www.google.com/"
+DEFAULT_SEARCH_PAGES: Final = ("/", "/search", "/web", "/url", "/setprefs", "/sorry")
 DEFAULT_SEARCH_ASSETS: Final = ("https://www.google.com", "https://consent.google.com")
 
 
 @dataclass(frozen=True, slots=True)
 class SearchScope:
-    """The address the browser channel is allowed to read, and what it may load."""
+    """The pages the search step may open, and what those pages may load."""
 
     entry: str = DEFAULT_SEARCH_ENTRY
+    pages: tuple[str, ...] = DEFAULT_SEARCH_PAGES
     assets: tuple[str, ...] = DEFAULT_SEARCH_ASSETS
 
 
@@ -271,12 +286,26 @@ class DomainSafetyService:
         self._allowlist_provider = allowlist_provider
         self._resolver = resolver
         scope = search_scope or SearchScope()
+        self._search_scope = scope
         self._search_entry = normalize_url(scope.entry)
+        self._search_pages = tuple(
+            page if page.startswith("/") else f"/{page}" for page in scope.pages
+        )
         self._search_asset_origins = frozenset(
             normalize_url(url).origin for url in scope.assets
         ) | {self._search_entry.origin}
 
     # -- queries ---------------------------------------------------------------- #
+    @property
+    def search_scope(self) -> SearchScope:
+        """The pages the search step may browse, as configured.
+
+        The automation reads the entry URL from here rather than naming a search
+        engine itself: one configuration says where a journey searches, and both
+        the guard that permits it and the browser that performs it agree on it.
+        """
+        return self._search_scope
+
     def allowed_origins(self) -> tuple[AllowedOrigin, ...]:
         """The approved target sites, read again on every call.
 
@@ -326,48 +355,80 @@ class DomainSafetyService:
         return normalized
 
     def check_search_url(self, url: str) -> NormalizedUrl:
-        """Return the normalised URL of a results-page read, or raise.
+        """Return the normalised URL of a page the search step may open, or raise.
 
-        The one place a search engine may be opened, and only the address the
-        application itself built: same origin as the scope's entry, same path, a
-        query string, no credentials. Everything a *session* does afterwards -
-        the visit, the dwell, the interactions - still goes through
-        :meth:`check_url`, which refuses search engines outright.
+        The one place a search engine may be browsed, and only for the addresses in
+        :class:`SearchScope`: the same origin as the scope's entry and one of its
+        search paths. Everything else a session does - the click-through to the
+        target, the dwell, the interactions - goes through :meth:`check_url`, which
+        refuses search engines outright.
         """
         normalized = normalize_url(url)
         entry = self._search_entry
-        if normalized.origin != entry.origin or normalized.path.rstrip("/") != entry.path.rstrip(
-            "/"
-        ):
+        entry_path = entry.path.rstrip("/") or "/"
+        if normalized.origin != entry.origin:
             log.warning("search_scope_refused", url=normalized.origin + normalized.path)
             raise SafetyViolationError(
-                "The search step may only open the results page it builds itself "
-                f"('{entry.url}'), not '{normalized.origin}{normalized.path}'.",
+                "The search step may only open Google's own pages "
+                f"('{entry.origin}'), not '{normalized.origin}'.",
                 reason=Reason.SEARCH_SCOPE,
                 url=normalized.url,
             )
-        if not normalized.query:
+        path = normalized.path.rstrip("/") or "/"
+        if path not in self._search_pages:
+            log.warning("search_scope_refused", url=normalized.origin + normalized.path)
             raise SafetyViolationError(
-                "A results page needs a keyword to search for.",
+                f"'{normalized.path}' is not a page the search step may open; it is limited to "
+                f"{', '.join(sorted(self._search_pages))}.",
+                reason=Reason.SEARCH_SCOPE,
+                url=normalized.url,
+            )
+        if path != entry_path and not normalized.query:
+            # Every page in the scope except the start page is one Google answers to a
+            # query: ``/search`` on its own is the home page under another spelling, and
+            # a ``/url`` with nothing to redirect to is nothing at all. Requiring the
+            # query is what keeps this a list of *addresses the application built* rather
+            # than a licence to browse google.com.
+            raise SafetyViolationError(
+                f"'{path}' is only in scope with the query Google built for it.",
                 reason=Reason.SEARCH_SCOPE,
                 url=normalized.url,
             )
         return normalized
 
-    def is_search_origin(self, url: str) -> bool:
-        """Whether ``url`` is the results page itself or one of the assets it loads.
+    def is_search_page(self, url: str) -> bool:
+        """Non-raising variant of :meth:`check_search_url`."""
+        try:
+            self.check_search_url(url)
+        except SafetyViolationError:
+            return False
+        return True
 
-        Used for two things only: letting the results page render, and refusing to
-        photograph it. Nothing else treats this as permission to browse.
+    def is_search_origin(self, url: str) -> bool:
+        """Whether ``url`` is a page of the search scope or an asset those pages load.
+
+        Used for two things only: letting Google's pages render and be clicked, and
+        refusing to photograph them. Nothing else treats this as permission to
+        browse, and it says nothing about a URL outside the search step.
         """
         try:
             normalized = normalize_url(url)
         except SafetyViolationError:
             return False
+        # Any path on one of those origins, including ``/x.css``: a results page keeps
+        # its stylesheets and scripts beside it. The path list belongs to the
+        # navigation rule above - a request for an asset is not a navigation, and the
+        # journey reads nothing from these URLs anyway.
         return normalized.origin in self._search_asset_origins
 
     def search_origins(self) -> tuple[AllowedOrigin, ...]:
-        """The origins the network fence must add for a browser-channel run."""
+        """The origins the network fence must add while a journey searches.
+
+        Only the search step is widened, and only for as long as it lasts; the
+        page-side request guard narrows it again to the paths in
+        :class:`SearchScope`, so the fence lets Google's assets through without
+        turning the browser into a general-purpose one.
+        """
         origins = {self._search_entry.origin, *self._search_asset_origins}
         return tuple(AllowedOrigin.from_url(normalize_url(url)) for url in sorted(origins))
 
@@ -412,9 +473,8 @@ class DomainSafetyService:
         if is_public_search_engine(url.host):
             log.warning("safety_blocked", url=url.origin, reason=Reason.PUBLIC_SEARCH_ENGINE)
             raise SafetyViolationError(
-                f"'{url.host}' is a public search engine. Rankings are read through the "
-                "official search API and only sites you control are opened; a search engine "
-                "is never browsed.",
+                f"'{url.host}' is a public search engine. A search engine is never a target "
+                "site and is never browsed for anything but the search step of a journey.",
                 reason=Reason.PUBLIC_SEARCH_ENGINE,
                 url=url.url,
             )

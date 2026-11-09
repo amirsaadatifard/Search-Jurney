@@ -8,22 +8,23 @@ every URL passes through one component, `DomainSafetyService`
 
 | Allowed | Not implemented, by design |
 | --- | --- |
-| Reading search data through the **official search API** (`src/search_providers/`), or one read of Google's results page in the browser when the user chose that channel | Any browsing, clicking or scrolling inside a search engine beyond that single read |
+| Searching Google in the test browser: open the result page, read it, page forward, click the target's own result | Any other browsing, clicking or scrolling inside a search engine, and any scraping of its pages |
 | Target sites the user registered **and** approved, plus the bundled sample website | Ranking, CTR, impression or analytics manipulation |
 | `http` / `https` only | CAPTCHA solving, anti-bot or rate-limit evasion |
 | Proxy profiles as a network-testing setting | Fingerprint spoofing, IP rotation, proxy scraping, ad clicks |
 
-A journey needs to know where a site ranks, and the user chooses the channel per scenario. Both are
-allowed to reach Google, and only for that one question:
+A journey needs to know where a site ranks, and the only honest source is the results page itself. That
+means *browsing a search engine*, which this project forbids itself everywhere else, so the permission is
+one object and one step of the journey — never a general licence to browse:
 
-* **Google in the browser** (default, no key): Chromium navigates to `https://www.google.com/search?q=…`,
-  reads the result links and the tab is left on a blank page. This is *not* the API route and Google's
-  terms of service forbid it, so the exception around it is kept as small as possible — see below.
-* **Google API**: the [Custom Search JSON API](https://developers.google.com/custom-search/v1/overview),
-  Google's own documented, key-authenticated endpoint, reached through
-  `src/search_providers/google_cse.py`. No browser is involved at all.
+* the browser opens Google's start page and types the keyword into its own box (the alternative,
+  building `/search?q=…` by hand, is kept only as a fallback for a page that refuses the box);
+* the result links are read out of the page that is showing, and the tab is blanked again when the search
+  step ends;
+* the target is reached by clicking *its own result*, which is the one navigation inside Google a
+  journey performs.
 
-## What the browser channel may and may not do
+## What the search step may and may not do
 
 The whole permission is one object (`SearchScope`: the entry URL plus the origins its page loads) that
 three places consult, and nothing else:
@@ -43,21 +44,25 @@ registered with `approved_for_automation` on `https://www.google.com` and the vi
 
 Rules that keep the rest of the journey ordinary:
 
-* the ranking is read, then the tab is blanked; the visit goes to the approved address;
-* every scope check during the dwell (`_verify_scope`) uses `check_url`, so a session can never idle on a
-  search engine;
-* a browser-channel journey that finds nothing stores no screenshot of Google's page.
+* the walk reads pages, it does not browse them: no scrolling, no hovering, no clicks except the target's
+  own result and the page's own "next";
+* the query is paced like a person's — at least two seconds between reads, and a bounded number of pages
+  per iteration — because a burst of requests is what an abusive script looks like;
+* after the search step closes, every scope check (`_verify_scope`, and the dwell's own `check_url` calls)
+  uses the ordinary allowlist, so a session can never idle on a search engine;
+* Google's page is never stored: screenshots are taken only of pages the *allowlist* covers, so a journey
+  that finds nothing — or that is refused — keeps no picture of the search engine.
 
-## Auditing the API channel
+## Auditing the search step
 
-* on the API channel every query is billed against the user's own quota, so there is nothing to hide
-  behind: no retry loop, no proxy rotation, no fallback source;
-* results are **never invented**. A provider error fails the session with the API's own message; a
-  missing key or engine id stops a run before it starts;
-* each query is stored as an observation (`search_observations`, `observed_results`), so a session can
-  be audited against the exact results the API returned at that moment;
-* the position is labelled with its source (`google-browser` or the API's own name), because neither
-  ranking is the personalised page a particular person happens to see.
+* nothing is invented. A refusal, an unreadable page or a page the journey no longer recognises fails the
+  session with the engine's own answer in the message; there is no retry loop, no second source, no
+  fallback position;
+* each read is stored as an observation (`search_observations`, `observed_results`), so a session can be
+  audited against the exact links the page carried at that moment, including which page of the walk each
+  one came from;
+* the position is labelled with its source (`google-browser`), because the ranking of a page is the
+  personalised page this browser happened to be shown, not a fact about the web.
 
 `DomainSafetyService` has no exempt origins in its *allowlist*: an entry there is either an approved
 target site or nothing. Its one narrow exception is the search scope above, held as data and readable only
@@ -79,7 +84,9 @@ machine-readable `reason`.
    allowlist entry can never unlock one (`public_search_engine`). Brand labels are matched under
    any top-level domain (`google.com`, `google.co.uk`, …); `google.com.evil.test` is correctly
    treated as belonging to `evil.test`. `check_search_url` is the separate, purpose-specific entry
-   point the browser channel uses (`search_scope`); it is not reachable from `check_url`.
+   point the search step uses (`search_scope`: Google's start page, its result pages, the redirect and
+   preference endpoints those pages use, and `/sorry`, so a rate-limit notice can be *named* instead of
+   reported as a safety violation); it is not reachable from `check_url`.
 5. **Allowlist** – the origin must match an enabled **and** approved target site (`not_allowlisted`).
    The application keeps no server of its own in the allowlist any more; the bundled sample website is a
    normal, approved target site and can be unapproved like any other.

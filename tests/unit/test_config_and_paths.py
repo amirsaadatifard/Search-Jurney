@@ -34,7 +34,9 @@ def test_environment_wins_over_env_file(tmp_path: Path) -> None:
     )
     config = AppConfig.from_environment({"SJAT_TARGET_PORT": "9300"}, env_file=env_file)
     assert config.target_port == 9300
-    assert config.data_dir == "elsewhere"
+    # A path is a path by the time it reaches the application, whichever source it
+    # came from - which is exactly why the value above is not quoted like a URL.
+    assert config.data_dir == Path("elsewhere")
 
 
 @pytest.mark.parametrize("port", ["80", "70000", "abc"])

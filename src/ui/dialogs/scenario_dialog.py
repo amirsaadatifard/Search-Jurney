@@ -21,9 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from src.database.models import Scenario
-from src.domain.enums import Environment, SearchProfile
+from src.domain.enums import Environment
 from src.services.scenario_service import ScenarioFormOptions
-from src.ui.formatting import SEARCH_PROFILE_LABELS
 from src.ui.widgets.form_dialog import FormDialog, Submit, make_combo
 
 
@@ -85,15 +84,6 @@ class ScenarioDialog(FormDialog):
             s.target_site_id if s else None,
         )
 
-        self.profile_input = make_combo(
-            [(label, profile.value) for profile, label in SEARCH_PROFILE_LABELS.items()],
-            s.search_profile if s else SearchProfile.GOOGLE_BROWSER,
-        )
-        self.profile_input.setToolTip(
-            "The browser channel needs no key and sees exactly what this browser is shown.\n"
-            "The API channel is the one Google permits, and needs a key and an engine id."
-        )
-
         # Timing -----------------------------------------------------------------------
         self.min_dwell_input = _spin(
             0, 100000, s.min_dwell_seconds if s else options.default_min_dwell, " s"
@@ -141,6 +131,12 @@ class ScenarioDialog(FormDialog):
         self.add_field("name", "Name", self.name_input)
         self.add_field("description", "Description", self.description_input)
         self.add_field("keyword", "Search keyword", self.keyword_input)
+        self.keyword_input.setToolTip(
+            "Chromium opens google.com, types this keyword, walks the result pages and "
+            "clicks your site's own result. The page is then kept open for the dwell "
+            "time below. Google may answer with a robot check instead: the run says so "
+            "and stops."
+        )
 
         self.add_section("Target and search")
         self.add_field(
@@ -148,15 +144,6 @@ class ScenarioDialog(FormDialog):
             "Target site",
             self.target_input,
             "Only enabled, approved sites can be used.",
-        )
-        self.add_field(
-            "search_profile",
-            "Rank source",
-            self.profile_input,
-            "Before each iteration the ranking of this site is read for the keyword, then "
-            "the approved site itself is opened. 'Google in the browser' needs no key but "
-            "goes against Google's terms and can be blocked; 'Google API' is permitted and "
-            "needs a key and a search-engine id under Google Research.",
         )
         self.local_note = _read_only(
             "This target is the local sample site, which Google cannot list: "
@@ -211,7 +198,6 @@ class ScenarioDialog(FormDialog):
             "description": self.description_input.toPlainText(),
             "keyword": self.keyword_input.currentText(),
             "target_site_id": self.target_input.currentData(),
-            "search_profile": self.profile_input.currentData(),
             "min_dwell_seconds": self.min_dwell_input.value(),
             "max_dwell_seconds": self.max_dwell_input.value(),
             "iterations": self.iterations_input.value(),

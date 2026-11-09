@@ -18,28 +18,6 @@ class Environment(StrEnum):
     CONTROLLED_TEST = "CONTROLLED_TEST"
 
 
-class SearchProfile(StrEnum):
-    """How a scenario finds out where the target site ranks.
-
-    ``GOOGLE_BROWSER`` opens Google's own results page in the test browser and
-    reads the position off it: no API key, no quota, and the rank is exactly
-    what this browser was shown. Google's terms of service forbid that kind of
-    automated access, so the page may answer with a captcha instead, and the
-    result can drift between runs.
-
-    ``GOOGLE_API`` asks the official Custom Search JSON API: permitted and
-    stable, but it needs an API key plus a search-engine id, and its ranking
-    omits personalisation and location.
-
-    Neither is used for a target Google can never list (the bundled loopback
-    sample site), which is visited directly - see
-    :meth:`src.automation.plan_factory.PlanFactory.from_scenario`.
-    """
-
-    GOOGLE_BROWSER = "GOOGLE_BROWSER"
-    GOOGLE_API = "GOOGLE_API"
-
-
 class ProxyProtocol(StrEnum):
     HTTP = "HTTP"
     HTTPS = "HTTPS"
@@ -87,9 +65,11 @@ class SessionState(StrEnum):
     OPENING_SEARCH = "OPENING_SEARCH"
     ENTERING_KEYWORD = "ENTERING_KEYWORD"
     SEARCHING = "SEARCHING"
+    PAGINATING_RESULTS = "PAGINATING_RESULTS"
     ANALYZING_RESULTS = "ANALYZING_RESULTS"
     TARGET_FOUND = "TARGET_FOUND"
     TARGET_NOT_FOUND = "TARGET_NOT_FOUND"
+    CLICKING_RESULT = "CLICKING_RESULT"
     OPENING_TARGET = "OPENING_TARGET"
     DWELLING = "DWELLING"
     INTERACTING = "INTERACTING"
@@ -111,6 +91,8 @@ class EventType(StrEnum):
     KEYWORD_ENTERED = "KEYWORD_ENTERED"
     SEARCH_SUBMITTED = "SEARCH_SUBMITTED"
     RESULTS_RECEIVED = "RESULTS_RECEIVED"
+    RESULTS_PAGED = "RESULTS_PAGED"
+    RESULT_CLICKED = "RESULT_CLICKED"
     TARGET_FOUND = "TARGET_FOUND"
     TARGET_NOT_FOUND = "TARGET_NOT_FOUND"
     TARGET_OPENED = "TARGET_OPENED"
@@ -131,7 +113,7 @@ class EventType(StrEnum):
 class ScreenshotKind(StrEnum):
     """Moment at which a screenshot was taken."""
 
-    SEARCH_RESULTS = "SEARCH_RESULTS"
+    SEARCH_RESULTS = "SEARCH_RESULTS"  # Google's page is never photographed
     TARGET_OPENED = "TARGET_OPENED"
     SESSION_END = "SESSION_END"
     ERROR = "ERROR"

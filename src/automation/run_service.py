@@ -1,7 +1,7 @@
 """Runs scenarios on a background thread and exposes pause / resume / stop.
 
 The GUI calls :meth:`start` and returns immediately; everything slow (the
-search-API query, the browser, dwelling) happens on a worker thread with its own
+browser, Google's pages, the dwell) happens on a worker thread with its own
 asyncio loop, so the interface never freezes. Only one run may be active (the
 configured maximum of concurrent sessions is 1); the design keeps run state in
 this object so a pool could replace it later.
@@ -18,13 +18,14 @@ from typing import Final
 
 from src.app.paths import AppPaths
 from src.automation.control import RunControl
-from src.automation.models import MODE_GOOGLE, RunSummary, SessionPlan
+from src.automation.models import RunSummary, SessionPlan
 from src.automation.observer import RunObserver, SafeObserver
 from src.automation.plan_factory import PlanFactory
 from src.automation.playwright_engine import PlaywrightEngine
-from src.automation.rank_observer import RankObserver, RankObserverRouter
 from src.automation.recorder import SessionRecorder
 from src.automation.screenshot_service import ScreenshotService
+from src.automation.search_journal import SearchJournal
+from src.automation.search_walk import GoogleSearchWalk
 from src.automation.session_runner import SessionRunner
 from src.database.session import Database
 from src.domain.exceptions import AutomationError, InvalidConfigurationError
@@ -50,14 +51,17 @@ class AutomationRunService:
         servers: LocalServerManager,
         scenarios: ScenarioService,
         credentials: CredentialStore,
-        rank_observer: RankObserver | None = None,
+        search_walk: GoogleSearchWalk | None = None,
     ) -> None:
         self._safety = safety
         self._paths = paths
         self._servers = servers
         self._scenarios = scenarios
         self._recorder = SessionRecorder(database)
-        self._rank_observer = rank_observer
+        # One walk per run service, stateless apart from its courtesy clock; the
+        # journal writes what each page read contained so a run can be audited.
+        self._search_walk = search_walk or GoogleSearchWalk()
+        self._journal = SearchJournal(database)
         self._plans = PlanFactory(settings, credentials)
         self._thread: threading.Thread | None = None
         self._control = RunControl()
@@ -96,40 +100,19 @@ class AutomationRunService:
     def _needs_sample_site(self, plan: SessionPlan) -> bool:
         """Whether a journey loads the bundled sample website (the only local server).
 
-        Decided by where the visit goes, not by how the ranking was obtained: a
-        site registered on this machine - the demo, or a development server the
-        user approved under another environment - has to be serving before the
-        browser is pointed at it. A journey against a real domain needs no local
-        server at all and must not be the reason a port gets bound.
+        Decided by where the visit goes: a site registered on this machine - the
+        demo, or a development server the user approved under another environment -
+        has to be serving before the browser is pointed at it. A journey against a
+        real domain needs no local server at all and must not be the reason a port
+        gets bound.
         """
         return plan.target_url.startswith(f"{self._servers.target.url}/")
 
-    def _check_search_source(self, plans: Sequence[SessionPlan]) -> None:
-        """Refuse a run whose journeys need real search data the app cannot obtain.
-
-        Failing here costs nothing; failing inside the first iteration leaves a
-        half-recorded session and a much less helpful message. Which source a
-        journey needs is the scenario's choice, so the observer decides.
-        """
-        if isinstance(self._rank_observer, RankObserverRouter):
-            self._rank_observer.check(plans)
-            return
-        if not any(plan.mode == MODE_GOOGLE for plan in plans):
-            return
-        if self._rank_observer is not None and self._rank_observer.credentials_ready:
-            return
-        raise InvalidConfigurationError(
-            "These journeys read the real Google ranking first, which needs an API key and a "
-            "search engine id. Enter them under Google Research (or set SJAT_GOOGLE_API_KEY and "
-            "SJAT_GOOGLE_ENGINE_ID) and start the run again."
-        )
-
     def start_plans(self, plans: list[SessionPlan], observer: RunObserver | None = None) -> None:
-        """Start a run from ready-made plans (used by Google Research mode)."""
+        """Start a run from ready-made plans (what the runner page and tests use)."""
         with self._guard:
             if self.is_running:
                 raise AutomationError("A run is already in progress.")
-            self._check_search_source(plans)
             if any(self._needs_sample_site(plan) for plan in plans):
                 errors = self._servers.start_all()
                 if errors:
@@ -200,7 +183,8 @@ class AutomationRunService:
                 self._safety,
                 control,
                 observer,
-                rank_observer=self._rank_observer,
+                search_walk=self._search_walk,
+                journal=self._journal,
             )
             part = await runner.run_plan(plan, run_id)
             total.completed += part.completed

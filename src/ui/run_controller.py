@@ -32,14 +32,16 @@ STATE_LABELS: Final[dict[SessionState, str]] = {
     SessionState.IDLE: "Idle",
     SessionState.INITIALIZING: "Checking safety rules",
     SessionState.STARTING_BROWSER: "Starting the browser",
-    # OPENING_SEARCH is the browser channel's own step: Chromium opens the results
-    # page. ENTERING_KEYWORD is left over from a flow that typed into the search
-    # box; it only appears when an old session is opened.
-    SessionState.OPENING_SEARCH: "Reading Google's results page",
-    SessionState.ENTERING_KEYWORD: "Typing the keyword",
-    SessionState.SEARCHING: "Reading the Google ranking",
+    # The search step is a browse: Chromium opens google.com, the keyword is typed
+    # into the page's own box, the result pages are read and walked, and the found
+    # result is clicked.
+    SessionState.OPENING_SEARCH: "Opening Google in the browser",
+    SessionState.ENTERING_KEYWORD: "Typing the keyword into Google",
+    SessionState.SEARCHING: "Reading the results page",
+    SessionState.PAGINATING_RESULTS: "Walking the next result page",
     SessionState.ANALYZING_RESULTS: "Looking for the target site",
     SessionState.TARGET_FOUND: "Target found",
+    SessionState.CLICKING_RESULT: "Clicking the result",
     SessionState.TARGET_NOT_FOUND: "Target not found",
     SessionState.OPENING_TARGET: "Opening the target",
     SessionState.DWELLING: "Dwelling on the target page",
@@ -53,12 +55,19 @@ STATE_LABELS: Final[dict[SessionState, str]] = {
 
 # Fraction of one session that is done when it enters a state (dwelling is dynamic).
 _STATE_PROGRESS: Final[dict[SessionState, float]] = {
+    # The ladder is monotone for both shapes a journey takes: the search walk
+    # climbs through the search states before OPENING_TARGET, and a direct visit
+    # jumps INITIALIZING -> TARGET_FOUND -> STARTING_BROWSER -> OPENING_TARGET.
     SessionState.INITIALIZING: 0.02,
-    SessionState.OPENING_SEARCH: 0.15,
-    SessionState.ENTERING_KEYWORD: 0.17,
+    SessionState.OPENING_SEARCH: 0.06,
+    SessionState.ENTERING_KEYWORD: 0.10,
+    # Paging repeats SEARCHING, so both share a rung: the bar waits during the walk
+    # instead of sliding backwards, and moves again as soon as the page is judged.
     SessionState.SEARCHING: 0.18,
-    SessionState.ANALYZING_RESULTS: 0.22,
-    SessionState.TARGET_FOUND: 0.26,
+    SessionState.PAGINATING_RESULTS: 0.18,
+    SessionState.ANALYZING_RESULTS: 0.24,
+    SessionState.TARGET_FOUND: 0.28,
+    SessionState.CLICKING_RESULT: 0.32,
     SessionState.STARTING_BROWSER: 0.34,
     SessionState.OPENING_TARGET: 0.40,
     SessionState.TARGET_NOT_FOUND: 0.90,
@@ -267,7 +276,7 @@ class RunController(QObject):
 
     # -- commands ------------------------------------------------------------------ #
     def start_plans(self, plans: list[SessionPlan]) -> None:
-        """Start a run from prepared plans (Google Research site tests)."""
+        """Start a run from plans the caller prepared and validated."""
         if self.is_active:
             raise AutomationError("A run is already in progress.")
         self.entries.clear()

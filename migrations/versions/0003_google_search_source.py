@@ -24,7 +24,11 @@ depends_on: str | Sequence[str] | None = None
 
 _OLD_PROFILE = sa.Enum("LOCAL_SIMULATOR", name="searchprofile", native_enum=False, length=32)
 _NEW_PROFILE = sa.Enum("GOOGLE", name="searchprofile", native_enum=False, length=32)
-_POSITION_CHECK = "ck_scenarios_simulated_position_range"
+# The constraint's own name, without the ``ck_scenarios_`` prefix: batch mode
+# renders the metadata's naming convention over it, so spelling out the prefix
+# here would ask Alembic for a constraint named ``ck_scenarios_ck_scenarios_...``.
+# The downgrade below creates it by the same bare name, which is the pair to keep.
+_POSITION_CHECK = "simulated_position_range"
 _DEMO_OLD_NAME = "Demo - Local search journey"
 _DEMO_NEW_NAME = "Demo - Sample site journey"
 _DEMO_DESCRIPTION = (

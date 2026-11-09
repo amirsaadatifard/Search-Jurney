@@ -13,7 +13,7 @@ from src.automation.observer import RunObserver
 from src.database.repositories import SessionRepository
 from src.domain.enums import EventType, SessionStatus
 from tests.e2e.conftest import catalogue, configure
-from tests.helpers.fake_google import FakeGoogleServer
+from tests.helpers.fake_google_page import FakeGooglePages
 from tests.helpers.fake_proxy import FakeHttpProxy
 
 pytestmark = pytest.mark.e2e
@@ -66,7 +66,7 @@ def use_proxy(container: AppContainer, port: int, **extra: object) -> None:
 
 
 def test_session_runs_through_the_proxy(
-    app: AppContainer, proxy: FakeHttpProxy, fake_google: FakeGoogleServer
+    app: AppContainer, proxy: FakeHttpProxy, fake_google: FakeGooglePages
 ) -> None:
     use_proxy(app, proxy.port)
     run_once(app)
@@ -132,7 +132,7 @@ def test_dead_proxy_fails_the_session_with_a_clear_error(app: AppContainer) -> N
 
 
 def test_redirects_leaving_the_approved_sites_are_still_detected_in_proxy_mode(
-    app: AppContainer, proxy: FakeHttpProxy, fake_google: FakeGoogleServer
+    app: AppContainer, proxy: FakeHttpProxy, fake_google: FakeGooglePages
 ) -> None:
     site = app.target_sites.create(
         {
@@ -141,7 +141,7 @@ def test_redirects_leaving_the_approved_sites_are_still_detected_in_proxy_mode(
             "approved_for_automation": True,
         }
     )
-    fake_google.state.items = catalogue(site.base_url, position=2)
+    fake_google.set_results(catalogue(site.base_url, position=2))
     use_proxy(app, proxy.port)
     configure(app, target_site_id=site.id)
     run_once(app)

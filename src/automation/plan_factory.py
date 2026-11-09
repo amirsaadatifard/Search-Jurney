@@ -2,15 +2,13 @@
 
 The factory also decides *how* a journey reaches its target:
 
-* a normal scenario asks Google where the target site ranks - in the browser,
-  on the results page itself (:data:`MODE_BROWSER`, no key), or through the
-  official search API (:data:`MODE_GOOGLE`, key and search-engine id) - and the
-  scenario's :class:`~src.domain.enums.SearchProfile` picks which;
-* a target registered as a *local* site — the bundled sample website, which
-  Google can never list — is opened directly (:data:`MODE_DIRECT`) and no
-  ranking is claimed for it;
-* a Google Research visit is always direct: the ranking belongs to the
-  observation the user already made.
+* a normal scenario searches Google in the browser (:data:`MODE_BROWSER`) -
+  the keyword is typed into Google's own box, the result pages are walked and the
+  target's link is clicked; this is the only way this application finds a ranking,
+  and it needs no key;
+* a target registered as a *local* site - the bundled sample website, which
+  Google can never list - is opened directly (:data:`MODE_DIRECT`) and no
+  ranking is claimed for it.
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from src.app.constants import DEFAULT_TIMEOUT_SECONDS
 from src.automation.models import (
     MODE_BROWSER,
     MODE_DIRECT,
-    MODE_GOOGLE,
     BrowserSettings,
     ProxySettings,
     ScreenshotPolicy,
@@ -31,16 +28,13 @@ from src.database.models import (
     BrowserProfile,
     ProxyProfile,
     Scenario,
-    SearchObservation,
     TargetSite,
 )
-from src.domain.enums import Environment, SearchProfile
+from src.domain.enums import Environment
 from src.domain.exceptions import InvalidConfigurationError
 from src.networking.credentials import CredentialStore, proxy_secret_key
-from src.search_providers import result_domain
 from src.services.settings_service import SettingKey, SettingsService
 
-DIRECT_VISIT_SCROLLS = 5
 _POLICY_FIELDS = {field.name for field in fields(ScreenshotPolicy)}
 
 
@@ -56,25 +50,12 @@ def skips_rank_observation(site: TargetSite) -> bool:
     return site.environment is Environment.LOCAL
 
 
-def search_channel(profile: SearchProfile | str) -> str:
-    """Which search source a stored profile value means.
-
-    ``GOOGLE_API`` is the only value that asks for the API; anything else -
-    including a value this version no longer offers, left by a database from
-    before the browser channel existed - means the browser channel, because
-    that is the one a scenario was configured with when there was no choice.
-    """
-    return MODE_GOOGLE if str(profile) == SearchProfile.GOOGLE_API.value else MODE_BROWSER
-
-
 class PlanFactory:
     """Turns a stored scenario (or an observation) into an immutable run plan."""
 
-    def mode_for(self, scenario: Scenario, site: TargetSite) -> str:
-        """The journey's channel: local visit, results page or search API."""
-        if skips_rank_observation(site):
-            return MODE_DIRECT
-        return search_channel(scenario.search_profile)
+    def mode_for(self, site: TargetSite) -> str:
+        """How the journey reaches its target: a search in the browser, or a visit."""
+        return MODE_DIRECT if skips_rank_observation(site) else MODE_BROWSER
 
     def __init__(self, settings: SettingsService, credentials: CredentialStore) -> None:
         self._settings = settings
@@ -101,48 +82,6 @@ class PlanFactory:
             javascript_enabled=browser.javascript_enabled,
             clear_storage=browser.clear_storage,
             user_agent_mode=browser.user_agent_mode.value,
-        )
-
-    def direct_visit_plan(
-        self,
-        observation: SearchObservation,
-        browser: BrowserProfile,
-        quick_seconds: int | None = None,
-    ) -> SessionPlan:
-        """One session that opens the URL a real search observed, directly.
-
-        ``quick_seconds`` makes a short look (no scrolling) instead of the default dwell.
-        """
-        if not observation.target_url:
-            raise InvalidConfigurationError("The observation has no target URL.")
-        defaults = self._settings.automation_defaults()
-        quick = quick_seconds is not None
-        dwell_min = quick_seconds if quick_seconds is not None else defaults.min_dwell_seconds
-        dwell_max = quick_seconds if quick_seconds is not None else defaults.max_dwell_seconds
-        return SessionPlan(
-            scenario_id=None,
-            scenario_name=f"Google Research: {observation.query}"[:120],
-            keyword=observation.query,
-            target_url=observation.target_url,
-            target_domain=result_domain(observation.target_url),
-            min_dwell_seconds=dwell_min,
-            max_dwell_seconds=dwell_max,
-            iterations=1,  # one session per click: this mode never repeats visits
-            delay_between_iterations=0,
-            scroll_enabled=not quick,
-            max_scroll_actions=0 if quick else DIRECT_VISIT_SCROLLS,
-            clear_cookies=True,
-            clear_storage=True,
-            incognito=True,
-            browser=self._browser_settings(browser),
-            proxy=None,
-            screenshots=self.screenshot_policy(),
-            timeout_seconds=defaults.timeout_seconds,
-            mode=MODE_DIRECT,
-            observation_id=observation.id,
-            observed_position=observation.target_position,
-            observed_result_count=observation.result_count,
-            provider=observation.provider,
         )
 
     def from_scenario(self, scenario: Scenario) -> SessionPlan:
@@ -198,10 +137,11 @@ class PlanFactory:
             timeout_seconds=int(
                 self._settings.get(SettingKey.DEFAULT_TIMEOUT, DEFAULT_TIMEOUT_SECONDS)
             ),
-            mode=self.mode_for(scenario, site),
+            mode=self.mode_for(site),
             search_language=defaults.search_language,
             search_country=defaults.search_country,
             requested_results=defaults.requested_results,
+            max_search_pages=defaults.max_search_pages,
         )
 
     def _password(self, proxy: ProxyProfile) -> str | None:

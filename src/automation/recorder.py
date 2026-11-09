@@ -33,7 +33,8 @@ class SessionRecorder:
                 AutomationSession(
                     run_id=run_id,
                     scenario_id=plan.scenario_id,
-                    observation_id=plan.observation_id,
+                    # The search journal links the observation it writes for the search
+                    # step afterwards; a direct visit has none, and never pretends to.
                     scenario_name=plan.scenario_name,
                     keyword=plan.keyword,
                     target_domain=plan.target_domain,

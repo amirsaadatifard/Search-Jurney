@@ -1,4 +1,10 @@
-"""Real search observations (Google Research mode) and their individual results."""
+"""What a search step actually read, and the individual results it was made of.
+
+One row per search step of a journey iteration: the keyword, the page of Google
+that was read, how many results it listed and where the approved site stood in it.
+The session points here, so "position 3" is always a claim that can be checked
+against the links a page really carried.
+"""
 
 from __future__ import annotations
 
